@@ -1,0 +1,239 @@
+﻿#pragma kernel InitPredators
+#pragma kernel EmitPredators
+#pragma kernel InteractPredators
+#pragma kernel UpdatePredators
+
+#pragma kernel Wrap
+
+#define THREAD [numthreads(256, 1, 1)]
+
+#include "../Common/Random.cginc"
+#include "../Common/Predator.cginc"
+
+#include "../Common/MembraneNode.cginc"
+#include "../Common/MembraneEdge.cginc"
+
+AppendStructuredBuffer<uint> _PredatorPoolAppend;
+ConsumeStructuredBuffer<uint> _PredatorPoolConsume;
+
+StructuredBuffer<Predator> _PredatorsRead;
+RWStructuredBuffer<Predator> _Predators;
+int _EmitCount, _PredatorsCount;
+
+StructuredBuffer<MembraneNode> _MembraneNodes;
+StructuredBuffer<MembraneEdge> _MembraneEdges;
+int _MembraneNodesCount;
+
+float _DT, _Time;
+float _Limit, _Drag;
+float _Rate;
+float _Tension;
+float4 _Point;
+
+Predator create()
+{
+    Predator c;
+    c.position = float2(0, 0);
+    c.velocity = c.force = float2(0, 0);
+    c.radius = 1;
+    c.stress = 0;
+    c.alive = true;
+    return c;
+}
+
+float proj_distance(float2 a, float2 b, float2 p, out float2 proj)
+{
+    float2 ba = b - a;
+    float lba = length(ba);
+    float2 nba = normalize(ba);
+
+    float2 pa = p.xy - a;
+    float l = dot(pa, nba);
+    proj = nba * l + a;
+    return distance(p.xy, proj);
+}
+
+bool encloses(float2 p)
+{
+    bool c = false;
+    for (int i = 0; i < _MembraneNodesCount; i++)
+    {
+        MembraneEdge e = _MembraneEdges[i];
+        if (!e.alive)
+            continue;
+
+        MembraneNode na = _MembraneNodes[e.a];
+        MembraneNode nb = _MembraneNodes[e.b];
+        if (!na.alive || !nb.alive)
+            continue;
+    
+        float2 a = na.position;
+        float2 b = nb.position;
+        if (((a.y > p.y) != (b.y > p.y)) && (p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x))
+        {
+            c = !c;
+        }
+    }
+    return c;
+}
+
+int find_closest_edge(float2 p)
+{
+    int closest = -1;
+    float minDist = 100000;
+
+    for (int i = 0; i < _MembraneNodesCount; i++)
+    {
+        MembraneEdge e = _MembraneEdges[i];
+        if (!e.alive)
+            continue;
+
+        MembraneNode na = _MembraneNodes[e.a];
+        MembraneNode nb = _MembraneNodes[e.b];
+        if (!na.alive || !nb.alive)
+            continue;
+
+        float2 proj;
+        float d = proj_distance(na.position, nb.position, p, proj);
+        if (d < minDist)
+        {
+            closest = i;
+            minDist = d;
+        }
+    }
+
+    return closest;
+}
+
+THREAD
+void InitPredators (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_PredatorsCount <= idx) return;
+
+    _Predators[idx].alive = false;
+    _PredatorPoolAppend.Append(idx);
+}
+
+THREAD
+void EmitPredators (uint3 id : SV_DispatchThreadID)
+{
+    if ((uint)_EmitCount <= id.x) return;
+
+    float2 offset = random_point_on_circle(id.xx + float2(0, _Time));
+
+    uint idx = _PredatorPoolConsume.Consume();
+    Predator c = create();
+    c.position = offset * 5;
+    c.radius = 0.25;
+    _Predators[idx] = c;
+}
+
+THREAD
+void InteractPredators (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_PredatorsCount <= idx)
+        return;
+
+    Predator c = _PredatorsRead[idx];
+    if (!c.alive)
+    {
+        _Predators[idx] = c;
+        return;
+    }
+
+    for (int i = 0; i < _PredatorsCount; i++)
+    {
+        if (idx == i)
+            continue;
+
+        Predator other = _PredatorsRead[i];
+        if (!other.alive)
+            continue;
+
+        float2 dir = c.position - other.position;
+        float l = length(dir);
+        float r = c.radius + other.radius;
+        if (0 < l && l < r)
+        {
+            c.force += normalize(dir) * (r - l);
+        }
+    }
+
+    _Predators[idx] = c;
+}
+
+THREAD
+void UpdatePredators (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_PredatorsCount <= idx) return;
+
+    Predator c = _Predators[idx];
+    if (!c.alive) return;
+
+    float2 repulse = _Point.xy - c.position.xy;
+    float lr = length(repulse);
+    float nl = saturate(1.0 - lr * _Point.w);
+    c.force += - normalize(repulse) * nl * 0.1;
+
+    c.velocity += c.force;
+    c.velocity += random_point_on_circle(id.xy + float2(0, _Time));
+    float2 vel = c.velocity * _DT;
+    float vl = length(vel);
+    if (0 < vl)
+    {
+        c.position += normalize(vel) * min(vl, _Limit);
+    }
+    c.radius = max(0.25, c.radius - _DT * 0.5);
+    c.velocity *= _Drag;
+    c.force = float2(0, 0);
+    _Predators[idx] = c;
+}
+
+THREAD
+void RemovePredators (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_PredatorsCount <= idx)
+        return;
+
+    Predator c = _Predators[idx];
+    if (c.alive && c.stress >= 1.0)
+    {
+        c.alive = false;
+        _PredatorPoolAppend.Append(idx);
+    }
+    _Predators[idx] = c;
+}
+
+THREAD
+void Wrap (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_PredatorsCount <= idx)
+        return;
+
+    Predator c = _Predators[idx];
+    if (!c.alive)
+    {
+        _Predators[idx] = c;
+        return;
+    }
+    
+    if (!encloses(c.position))
+    {
+        int closest = find_closest_edge(c.position);
+        if (closest >= 0)
+        {
+            MembraneEdge e = _MembraneEdges[closest];
+            float2 v = _MembraneNodes[e.a].position - _MembraneNodes[e.b].position;
+            float2 perp = float2(-v.y, v.x);
+            c.force += -normalize(perp) * _Tension;
+            c.stress = saturate(c.stress + _DT);
+        }
+    }
+    _Predators[idx] = c;
+}
+

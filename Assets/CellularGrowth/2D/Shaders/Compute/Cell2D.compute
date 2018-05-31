@@ -1,0 +1,797 @@
+﻿#pragma kernel InitCells
+#pragma kernel ResetCells
+#pragma kernel EmitCells
+#pragma kernel InteractCells
+#pragma kernel UpdateCells
+#pragma kernel DivideCells
+
+#pragma kernel InitEdges
+#pragma kernel ResetEdges
+#pragma kernel UpdateEdges
+#pragma kernel RemoveEdges
+#pragma kernel CopyEdges
+
+#pragma kernel RemoveCells
+#pragma kernel RemoveCellsCircle
+#pragma kernel RemoveCellsLine
+#pragma kernel RemoveCellsSegment
+
+#pragma kernel Divide
+#pragma kernel Wrap
+#pragma kernel Hunt
+
+#define THREAD [numthreads(256, 1, 1)]
+#define EPSILON 0.00001
+
+#include "../Common/Random.cginc"
+#include "../Common/Cell.cginc"
+#include "../Common/Edge.cginc"
+
+#include "../Common/MembraneNode.cginc"
+#include "../Common/MembraneEdge.cginc"
+
+#include "../Common/Predator.cginc"
+
+struct Neighbor
+{
+    int edge;
+    int cell;
+};
+
+AppendStructuredBuffer<uint> _CellPoolAppend;
+ConsumeStructuredBuffer<uint> _CellPoolConsume;
+StructuredBuffer<Cell> _CellsRead;
+RWStructuredBuffer<Cell> _Cells;
+int _EmitCount, _CellsCount;
+int _EmitType;
+
+AppendStructuredBuffer<uint> _EdgePoolAppend;
+ConsumeStructuredBuffer<uint> _EdgePoolConsume;
+StructuredBuffer<Edge> _EdgesRead;
+RWStructuredBuffer<Edge> _Edges;
+int _EdgesCount;
+
+StructuredBuffer<MembraneNode> _MembraneNodes;
+StructuredBuffer<MembraneEdge> _MembraneEdges;
+int _MembraneNodesCount;
+
+RWStructuredBuffer<Predator> _Predators;
+int _PredatorsCount;
+
+float _DT, _Time;
+float _Limit, _Drag;
+float _Rate;
+float _Tension;
+float4 _Point;
+
+Cell create()
+{
+    Cell c;
+    c.position = float2(0, 0);
+    c.velocity = c.force = float2(0, 0);
+    c.radius = c.threshold = 1;
+    c.stress = 0;
+    c.type = 0;
+    c.links = 0;
+    c.membrane = -1;
+    c.alive = true;
+    return c;
+}
+
+Cell spawn(int idx, inout Cell parent, float2 offset)
+{
+    float rh = parent.radius * 0.5;
+    rh = max(rh, 0.1);
+
+    Cell child = create();
+    child.position = parent.position + offset;
+    child.velocity = child.force = float2(0, 0);
+    child.radius = rh;
+    float x = nrand(idx.xx + float2(0, _Time));
+    child.threshold = rh * lerp(1.25, 2.5, x);
+
+    child.type = parent.type;
+
+    parent.position -= offset;
+    parent.radius = rh;
+
+    parent.stress = child.stress = 1.0 - EPSILON;
+
+    return child;
+}
+
+void connect(int a, int b)
+{
+    uint eidx = _EdgePoolConsume.Consume();
+    Edge e;
+    e.a = a;
+    e.b = b;
+    e.fa = e.fb = float2(0, 0);
+    e.alive = true;
+    _Edges[eidx] = e;
+}
+
+int count_links(int idx, inout Cell c)
+{
+    int opposite = -1;
+    c.links = 0;
+    for (int i = 0; i < _EdgesCount; i++)
+    {
+        Edge e = _Edges[i];
+        if (e.alive)
+        {
+            if (e.a == idx)
+            {
+                opposite = e.b;
+                c.force += e.fa;
+                c.links++;
+            }
+            else if (e.b == idx)
+            {
+                opposite = e.a;
+                c.force += e.fb;
+                c.links++;
+            }
+        }
+    }
+    return opposite;
+}
+
+void remove(int idx)
+{
+    for (int i = 0; i < _EdgesCount; i++)
+    {
+        Edge e = _Edges[i];
+        if (e.alive && has(e, idx))
+        {
+            e.alive = false;
+            _Edges[i] = e;
+            _EdgePoolAppend.Append(i);
+        }
+    }
+}
+
+float proj_distance(float2 a, float2 b, float2 p, out float2 proj)
+{
+    float2 ba = b - a;
+    float lba = length(ba);
+    float2 nba = normalize(ba);
+
+    float2 pa = p.xy - a;
+    float l = dot(pa, nba);
+    proj = nba * l + a;
+    return distance(p.xy, proj);
+}
+
+bool encloses(float2 p)
+{
+    bool c = false;
+    for (int i = 0; i < _MembraneNodesCount; i++)
+    {
+        MembraneEdge e = _MembraneEdges[i];
+        if (!e.alive)
+            continue;
+
+        MembraneNode na = _MembraneNodes[e.a];
+        MembraneNode nb = _MembraneNodes[e.b];
+        if (!na.alive || !nb.alive)
+            continue;
+    
+        float2 a = na.position;
+        float2 b = nb.position;
+        if (((a.y > p.y) != (b.y > p.y)) && (p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x))
+        {
+            c = !c;
+        }
+    }
+    return c;
+}
+
+int find_closest_edge(float2 p)
+{
+    int closest = -1;
+    float minDist = 100000;
+
+    for (int i = 0; i < _MembraneNodesCount; i++)
+    {
+        MembraneEdge e = _MembraneEdges[i];
+        if (!e.alive)
+            continue;
+
+        MembraneNode na = _MembraneNodes[e.a];
+        MembraneNode nb = _MembraneNodes[e.b];
+        if (!na.alive || !nb.alive)
+            continue;
+
+        float2 proj;
+        float d = proj_distance(na.position, nb.position, p, proj);
+        if (d < minDist)
+        {
+            closest = i;
+            minDist = d;
+        }
+    }
+
+    return closest;
+}
+
+bool dividable(uint id, Cell cell)
+{
+    float2 repulse = _Point.xy - cell.position.xy;
+    float lr = length(repulse);
+    if (lr > _Point.z)
+        return false;
+
+    float x = nrand(id.xx, _Time);
+    float nl = saturate(1.0 - lr * _Point.w);
+    float growRate = saturate(cell.threshold / cell.radius);
+    if (x > _Rate * nl * growRate)
+        return false;
+
+    return true;
+}
+
+THREAD
+void InitCells (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (idx >= _CellsCount) return;
+
+    Cell c = create();
+    c.alive = false;
+    _Cells[idx] = c;
+    _CellPoolAppend.Append(idx);
+}
+
+THREAD
+void ResetCells (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (idx >= _CellsCount) return;
+
+    Cell c = _Cells[idx];
+    if (c.alive)
+    {
+        c.alive = false;
+        _CellPoolAppend.Append(idx);
+    }
+    _Cells[idx] = c;
+}
+
+THREAD
+void EmitCells (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_EmitCount) return;
+
+    float2 offset = random_point_on_circle(id.xx + float2(0, _Time));
+
+    uint idx = _CellPoolConsume.Consume();
+    Cell c = create();
+    c.position = offset;
+    c.stress = 1.0 - EPSILON;
+    c.type = _EmitType;
+    _Cells[idx] = c;
+}
+
+THREAD
+void InteractCells (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx)
+        return;
+
+    Cell c = _CellsRead[idx];
+    if (!c.alive)
+    {
+        _Cells[idx] = c;
+        return;
+    }
+
+    float rad3 = c.radius * 3;
+    int neighborCount = 0;
+    float2 neighborCenter = float2(0, 0);
+
+    int opposite = count_links(idx, c);
+    int closest = -1;
+    float minDist = 10000;
+
+    for (int i = 0; i < _CellsCount; i++)
+    {
+        if (idx == i)
+            continue;
+
+        Cell other = _CellsRead[i];
+        if (!other.alive)
+            continue;
+
+        float2 dir = c.position - other.position;
+        float l = length(dir);
+        float r = c.radius + other.radius;
+        if (0 < l && l < r)
+        {
+            c.radius *= 0.995;
+            c.force += normalize(dir) * (r - l);
+        }
+
+        if (0 < l && l < other.radius + rad3)
+        {
+            neighborCenter += other.position;
+            neighborCount += 1;
+
+            // check nearest neighbor
+            if (i != opposite && l < minDist)
+            {
+                minDist = l;
+                closest = i;
+            }
+        }
+    }
+
+    // repulsion from neighbors center
+    if (neighborCount > 0)
+    {
+        neighborCenter /= neighborCount;
+        float2 dir = c.position - neighborCenter;
+        float len = length(dir);
+        if (len > 0)
+        {
+            c.force += (normalize(dir) * 0.1);
+        }
+    }
+
+    if (closest >= 0)
+    {
+        if (c.links == 0)
+        {
+            connect(idx, closest);
+        } else if (c.links == 1 && _CellsRead[closest].links >= 2)
+        {
+            // NOTE: 同じタイミングでconnectされることで二重につながってしまう
+            connect(idx, closest);
+            c.links++;
+            // _Cells[closest].links++;
+        }
+    }
+
+    _Cells[idx] = c;
+}
+
+THREAD
+void UpdateCells (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx)
+        return;
+
+    Cell c = _Cells[idx];
+    if (!c.alive)
+        return;
+
+    // grow
+    c.radius = min(c.threshold, c.radius + c.radius * 0.5 * _DT);
+    c.radius = max(0.1, c.radius);
+
+    // count_links(idx, c);
+
+    float2 repulse = _Point.xy - c.position.xy;
+    float lr = length(repulse);
+    float nl = saturate(1.0 - lr * _Point.w);
+    c.force += - normalize(repulse) * nl * 0.1;
+
+    c.velocity += c.force;
+    float2 vel = c.velocity * _DT;
+    float vl = length(vel);
+    if (0 < vl)
+    {
+        c.position += normalize(vel) * min(vl, _Limit);
+        c.velocity = normalize(c.velocity) * min(length(c.velocity) * _Drag, _Limit);
+    } else
+    {
+        c.velocity = float2(0, 0);
+    }
+    // c.velocity *= _Drag;
+    c.force = float2(0, 0);
+    _Cells[idx] = c;
+}
+
+THREAD
+void DivideCells (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx)
+        return;
+
+    Cell parent = _Cells[idx];
+    if (!parent.alive)
+        return;
+
+    if (dividable(idx, parent))
+        return;
+
+    static const int neighborLimit = 2;
+    Neighbor neighbors[neighborLimit];
+    int neighborCount = 0;
+    for (int i = 0; i < _EdgesCount; i++)
+    {
+        Edge e = _Edges[i];
+        if (e.alive && has(e, idx))
+        {
+            Neighbor n;
+            n.edge = i;
+            n.cell = opposite(e, idx);
+            neighbors[neighborCount] = n;
+            neighborCount++;
+            if (neighborCount >= neighborLimit)
+                break;
+        }
+    }
+
+    if (neighborCount == 0)
+    {
+        float2 offset = random_point_on_circle(id.xy + float2(0, _Time)) * parent.radius * 0.25;
+        Cell child = spawn(idx, parent, offset);
+        uint cidx = _CellPoolConsume.Consume();
+        _Cells[cidx] = child;
+        _Cells[idx] = parent;
+        connect(idx, cidx);
+    }
+
+    /*
+    else if (neighborCount == 1)
+    {
+        float2 offset = random_point_on_circle(id.xy + float2(0, _Time)) * parent.radius * 0.5;
+        Cell child = spawn(idx, parent, offset);
+        uint cidx = _CellPoolConsume.Consume();
+        _Cells[cidx] = child;
+        _Cells[idx] = parent;
+        connect(idx, cidx);
+        connect(neighbors[0].cell, cidx);
+    }
+    else if (neighborCount == 2)
+    {
+        float x = nrand(id.xy + float2(0, _Time));
+        Neighbor neighbor = neighbors[min(floor(x * 2), 1)];
+        int opposite = neighbor.cell;
+        float2 dir = _Cells[opposite].position - parent.position;
+        float2 offset = normalize(dir) * parent.radius * 0.5;
+        Cell child = spawn(idx, parent, offset);
+        uint cidx = _CellPoolConsume.Consume();
+        _Cells[cidx] = child;
+        _Cells[idx] = parent;
+        connect(idx, cidx);
+
+        // break a edge between parent and opposite
+        // and connect opposite and child
+        // (replace two edge)
+        Edge e = _Edges[neighbor.edge];
+        e.a = opposite;
+        e.b = cidx;
+        e.alive = true;
+        _Edges[neighbor.edge] = e;
+    }
+    */
+
+}
+
+THREAD
+void InitEdges (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_EdgesCount <= idx) return;
+
+    _Edges[idx].alive = false;
+    _EdgePoolAppend.Append(idx);
+}
+
+THREAD
+void ResetEdges (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (idx >= _EdgesCount) return;
+
+    Edge e = _Edges[idx];
+    if (e.alive)
+    {
+        e.alive = false;
+        _EdgePoolAppend.Append(idx);
+    }
+    _Edges[idx] = e;
+}
+
+
+
+THREAD
+void UpdateEdges (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_EdgesCount <= idx)
+        return;
+
+    Edge e = _Edges[idx];
+    e.fa = e.fb = float2(0, 0);
+
+    if (!e.alive)
+    {
+        _Edges[idx] = e;
+        return;
+    }
+
+    Cell ca = _Cells[e.a];
+    Cell cb = _Cells[e.b];
+    if (!ca.alive || !cb.alive)
+    {
+        _Edges[idx] = e;
+        return;
+    }
+
+    float2 dir = ca.position - cb.position;
+    float r = ca.radius + cb.radius;
+    float len = length(dir);
+    if (abs(len - r) > 0)
+    {
+        float l = ((len - r) / r);
+        float2 f = normalize(dir) * min(abs(l), 1.0) * sign(l) * 5.0;
+        // float2 f = normalize(dir) * l * 5.0;
+        e.fa += -f;
+        e.fb += f;
+    }
+
+    _Edges[idx] = e;
+}
+
+THREAD
+void RemoveEdges (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_EdgesCount <= idx)
+        return;
+
+    Edge e = _Edges[idx];
+    if (!e.alive)
+    {
+        return;
+    }
+
+    bool alive = (_Cells[e.a].alive && _Cells[e.b].alive);
+    if (!alive)
+    {
+        e.alive = false;
+        _EdgePoolAppend.Append(idx);
+    }
+    _Edges[idx] = e;
+}
+
+THREAD
+void CopyEdges (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_EdgesCount <= idx)
+        return;
+
+    Edge e = _EdgesRead[idx];
+    _Edges[idx] = e;
+}
+
+
+THREAD
+void RemoveCells (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx)
+        return;
+
+    Cell c = _Cells[idx];
+    // if (c.alive && c.stress >= 1.0 && c.links <= 1)
+    if (c.alive && c.stress >= 1.0)
+    {
+        c.alive = false;
+        _CellPoolAppend.Append(idx);
+    }
+    _Cells[idx] = c;
+}
+
+float2 _Center;
+float _Radius;
+
+THREAD
+void RemoveCellsCircle (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx)
+        return;
+
+    Cell c = _Cells[idx];
+    if (c.alive && length(c.position.xy - _Center.xy) < _Radius)
+    {
+        c.alive = false;
+        _CellPoolAppend.Append(idx);
+    }
+    _Cells[idx] = c;
+}
+
+float2 _Start, _End;
+float _Threshold;
+
+THREAD
+void RemoveCellsLine (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx)
+        return;
+
+    Cell c = _Cells[idx];
+    if (!c.alive)
+        return;
+
+    float2 a = _Start;
+    float2 b = _End;
+    float2 ba = b - a;
+    float2 nba = normalize(ba);
+
+    float2 pa = c.position.xy - a;
+    float2 pd = nba * dot(pa, nba) + a;
+    float d = distance(c.position.xy, pd);
+    if (d > _Threshold)
+    {
+        c.alive = false;
+        _CellPoolAppend.Append(idx);
+    }
+    _Cells[idx] = c;
+}
+
+THREAD
+void RemoveCellsSegment (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx)
+        return;
+
+    Cell c = _Cells[idx];
+    if (!c.alive)
+        return;
+
+    float2 a = _Start;
+    float2 b = _End;
+    float2 ba = b - a;
+    float lba = length(ba);
+    float2 nba = normalize(ba);
+
+    float2 pa = c.position.xy - a;
+    float l = dot(pa, nba);
+    float2 pd = nba * l + a;
+    float d = distance(c.position.xy, pd);
+    if (d > _Threshold && -_Threshold < l && l < lba + _Threshold)
+    {
+        c.alive = false;
+        _CellPoolAppend.Append(idx);
+    }
+    _Cells[idx] = c;
+}
+
+THREAD
+void Divide (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_EdgesCount <= idx)
+        return;
+
+    Edge e = _EdgesRead[idx];
+    if (!e.alive)
+    {
+        // DANGER: connected edges can be overwritten !
+        // _Edges[idx] = e;
+        return;
+    }
+
+    Cell ca = _Cells[e.a];
+    Cell cb = _Cells[e.b];
+    if (!ca.alive || !ca.alive)
+    {
+        return;
+    }
+
+    bool ba = dividable(e.a, ca);
+    bool bb = dividable(e.b, cb);
+
+    if (ba)
+    {
+        if (ca.links == 1)
+        {
+            float2 offset = random_point_on_circle(id.xy + float2(0, _Time)) * ca.radius * 0.5;
+            Cell child = spawn(e.a, ca, offset);
+            uint cidx = _CellPoolConsume.Consume();
+            _Cells[cidx] = child;
+            _Cells[e.a] = ca;
+            connect(e.a, cidx);
+            connect(cidx, e.b);
+        }
+        else if (ca.links == 2)
+        {
+            float x = nrand(id.xy + float2(0, _Time));
+            int opposite = e.b;
+            float2 dir = cb.position - ca.position;
+            float2 offset = normalize(dir) * ca.radius * 0.5;
+            Cell child = spawn(e.a, ca, offset);
+            uint cidx = _CellPoolConsume.Consume();
+            _Cells[cidx] = child;
+            _Cells[e.a] = ca;
+            connect(e.a, cidx);
+
+            // break a edge between parent and opposite
+            // and connect opposite and child
+            // (replace two edge)
+            e.a = opposite;
+            e.b = cidx;
+            e.alive = true;
+        }
+    }
+
+    _Edges[idx] = e;
+}
+
+THREAD
+void Wrap (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx)
+        return;
+
+    Cell c = _Cells[idx];
+    c.membrane = -1;
+    if (!c.alive)
+    {
+        _Cells[idx] = c;
+        return;
+    }
+    
+    if (!encloses(c.position))
+    {
+        int closest = find_closest_edge(c.position);
+        if (closest >= 0)
+        {
+            MembraneEdge e = _MembraneEdges[closest];
+            float2 v = _MembraneNodes[e.a].position - _MembraneNodes[e.b].position;
+            float2 perp = float2(-v.y, v.x);
+            c.force += -normalize(perp) * _Tension;
+            c.membrane = closest;
+            c.stress = saturate(c.stress + _DT);
+        }
+    } else
+    {
+        c.stress = saturate(c.stress - _DT * 0.5);
+    }
+
+    _Cells[idx] = c;
+}
+
+
+THREAD
+void Hunt (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx)
+        return;
+
+    Cell c = _Cells[idx];
+    if (!c.alive)
+    {
+        _Cells[idx] = c;
+        return;
+    }
+
+    for (int i = 0; i < _PredatorsCount; i++)
+    {
+        Predator pr = _Predators[i];
+        if (pr.alive && c.type == 0 && length(c.position.xy - pr.position.xy) < pr.radius)
+        {
+            pr.radius += c.radius * 0.1;
+            _Predators[i] = pr;
+
+            c.alive = false;
+            _CellPoolAppend.Append(idx);
+            break;
+        }
+    }
+    _Cells[idx] = c;
+}
+

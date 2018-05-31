@@ -1,0 +1,317 @@
+﻿#pragma kernel InitNodes
+#pragma kernel InitEdges
+#pragma kernel Emit
+
+#pragma kernel InteractNodes
+#pragma kernel Stretch
+#pragma kernel Expand
+#pragma kernel Relax
+#pragma kernel UpdateNodes
+
+#define THREAD [numthreads(256, 1, 1)]
+
+#include "../Common/Random.cginc"
+#include "../Common/Cell.cginc"
+#include "../Common/MembraneNode.cginc"
+#include "../Common/MembraneEdge.cginc"
+
+AppendStructuredBuffer<uint> _NodePoolAppend;
+ConsumeStructuredBuffer<uint> _NodePoolConsume;
+
+StructuredBuffer<MembraneNode> _NodesRead;
+RWStructuredBuffer<MembraneNode> _Nodes;
+
+int _NodesCount;
+
+AppendStructuredBuffer<uint> _EdgePoolAppend;
+ConsumeStructuredBuffer<uint> _EdgePoolConsume;
+RWStructuredBuffer<MembraneEdge> _Edges;
+int _EdgesCount;
+
+StructuredBuffer<Cell> _Cells;
+int _CellsCount;
+
+float _DT, _Time;
+float _Limit, _Drag;
+float4 _Point;
+float _Tension;
+
+THREAD
+void InitNodes (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_NodesCount <= idx) return;
+
+    _Nodes[idx].alive = false;
+    _NodePoolAppend.Append(idx);
+}
+
+THREAD
+void InitEdges (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_EdgesCount <= idx) return;
+
+    _Edges[idx].alive = false;
+    _EdgePoolAppend.Append(idx);
+}
+
+int _EmitCount;
+float _EmitRadius;
+float _EdgeLength;
+
+uint spawn(float2 p)
+{
+    uint idx = _NodePoolConsume.Consume();
+    MembraneNode c;
+    c.position = p;
+    c.velocity = c.force = float2(0, 0);
+    c.radius = 0;
+    c.alive = true;
+    _Nodes[idx] = c;
+    return idx;
+}
+
+void connect(int a, int b)
+{
+    uint eidx = _EdgePoolConsume.Consume();
+    MembraneEdge e = _Edges[eidx];
+    e.a = a;
+    e.b = b;
+    e.alive = true;
+    _Edges[eidx] = e;
+}
+
+float2 sample(int i, int n, float radius)
+{
+    float t = 1.0 * i / n;
+    float r = t * PI * 2;
+    return float2(cos(r) * radius, sin(r) * radius);
+}
+
+[numthreads(1, 1, 1)]
+void Emit (uint3 id : SV_DispatchThreadID)
+{
+    uint head = spawn(sample(0, _EmitCount, _EmitRadius));
+    uint tail = spawn(sample(_EmitCount - 1, _EmitCount, _EmitRadius));
+    connect(head, tail);
+
+    int i;
+    for (i = 1; i < _EmitCount - 1; i++)
+    {
+        uint idx = spawn(sample(i, _EmitCount, _EmitRadius));
+        connect(head, idx);
+        head = idx;
+        if (i == _EmitCount - 2)
+        {
+            connect(idx, tail);
+        }
+    }
+
+}
+
+THREAD
+void InteractNodes (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_NodesCount <= idx)
+        return;
+
+    MembraneNode c = _NodesRead[idx];
+    if (!c.alive)
+    {
+        _Nodes[idx] = c;
+        return;
+    }
+
+    // float rad3 = c.radius * 3;
+    float rad3 = _EdgeLength * 3;
+    int neighborCount = 0;
+    float2 neighborCenter = float2(0, 0);
+
+    for (int i = 0; i < _NodesCount; i++)
+    {
+        if (idx == i)
+            continue;
+
+        MembraneNode other = _NodesRead[i];
+        if (!other.alive)
+            continue;
+
+        float2 dir = c.position - other.position;
+        float l = length(dir);
+        // float r = c.radius + other.radius;
+        float r = _EdgeLength;
+        if (0 < l && l < r)
+        {
+            c.force += normalize(dir) * (r - l);
+        }
+
+        if (0 < l && l < other.radius + rad3)
+        {
+            neighborCenter += other.position;
+            neighborCount += 1;
+        }
+    }
+
+    // repulsion from neighbors center
+    if (neighborCount > 0)
+    {
+        neighborCenter /= neighborCount;
+        float2 dir = c.position - neighborCenter;
+        float len = length(dir);
+        if (len > 0)
+        {
+            // c.force += (normalize(dir) * 0.1);
+        }
+    }
+
+    _Nodes[idx] = c;
+}
+
+THREAD
+void UpdateNodes (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_NodesCount <= idx) return;
+
+    MembraneNode c = _Nodes[idx];
+    if (!c.alive) return;
+
+    for (int i = 0; i < _EdgesCount; i++)
+    {
+        MembraneEdge e = _Edges[i];
+        if (e.alive)
+        {
+            if (e.a == idx)
+            {
+                c.force += e.fa;
+            }
+            else if (e.b == idx)
+            {
+                c.force += e.fb;
+            }
+        }
+    }
+
+    float2 repulse = _Point.xy - c.position.xy;
+    float lr = length(repulse);
+    float nl = saturate(1.0 - lr * _Point.w);
+    c.force += - normalize(repulse) * nl;
+
+    // constant expansion
+    float mass = saturate(nrand(float2(0, idx)));
+    c.force += normalize(c.position.xy) * lerp(0.001, 0.01, mass);
+
+    c.velocity += c.force;
+    float2 vel = c.velocity * _DT;
+    float vl = length(vel);
+    if (0 < vl)
+    {
+        c.position += normalize(vel) * min(vl, _Limit);
+    }
+    c.velocity *= _Drag;
+    c.force = float2(0, 0);
+    _Nodes[idx] = c;
+}
+
+THREAD
+void Stretch (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_EdgesCount <= idx)
+        return;
+
+    MembraneEdge e = _Edges[idx];
+    if (!e.alive)
+        return;
+
+    MembraneNode ca = _Nodes[e.a];
+    MembraneNode cb = _Nodes[e.b];
+    if (!ca.alive || !cb.alive)
+    {
+        _Edges[idx] = e;
+        return;
+    }
+
+    float2 dir = ca.position - cb.position;
+    float len = length(dir);
+    if (len < 0.001)
+        return;
+
+    float r = _EdgeLength;
+    if (len > r)
+    {
+        float l = ((len - r) / r);
+        float2 f = normalize(dir) * min(l, 1.0) * 5.0;
+        e.fa += -f;
+        e.fb += f;
+    } else
+    {
+        /*
+        // constant expansion
+        float2 v = ca.position - cb.position;
+        float2 f = normalize(float2(-v.y, v.x)) * 0.01;
+        e.fa += f;
+        e.fb += f;
+        */
+    }
+
+    _Edges[idx] = e;
+}
+
+
+THREAD
+void Expand(uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_EdgesCount <= idx)
+        return;
+
+    MembraneEdge e = _Edges[idx];
+    if (!e.alive)
+    {
+        return;
+    }
+
+    MembraneNode ca = _Nodes[e.a];
+    MembraneNode cb = _Nodes[e.b];
+    if (!ca.alive || !cb.alive)
+    {
+        return;
+    }
+
+    float2 v = ca.position - cb.position;
+    float2 perp = float2(-v.y, v.x);
+    float l = length(perp);
+    if (l < 0.01)
+    {
+        return;
+    }
+
+    for (int i = 0; i < _CellsCount; i++)
+    {
+        Cell c = _Cells[i];
+        if (c.alive && c.membrane == idx)
+        {
+            float2 f = normalize(perp) * saturate(1.0 - _Tension);
+            e.fa += f;
+            e.fb += f;
+            _Edges[idx] = e;
+            return;
+        }
+    }
+}
+
+THREAD
+void Relax (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_EdgesCount <= idx)
+        return;
+
+    MembraneEdge e = _Edges[idx];
+    e.fa = e.fb = float2(0, 0);
+    _Edges[idx] = e;
+}
+
