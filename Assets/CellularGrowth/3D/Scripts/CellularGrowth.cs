@@ -23,7 +23,6 @@ namespace CellularGrowth.Dim3
 
         [SerializeField] protected Material cellMaterial, edgeMaterial, faceMaterial;
         [SerializeField] protected bool drawCell = true, drawEdge = true, drawFace = true;
-        [SerializeField] protected Gradient gradient;
 
         [SerializeField] protected bool dividable;
         [SerializeField, Range(3, 5)] protected int dividableLinks = 4;
@@ -59,7 +58,6 @@ namespace CellularGrowth.Dim3
         protected int cellPoolCount = 0, edgePoolCount = 0, facePoolCount = 0;
 
         protected Coroutine iDivider;
-        protected Texture2D gradTexture;
 
         #region Kernels
 
@@ -96,7 +94,7 @@ namespace CellularGrowth.Dim3
             drawCellArgsBuffer = new ComputeBuffer(1, sizeof(uint) * drawCellArgs.Length, ComputeBufferType.IndirectArguments);
             drawCellArgsBuffer.SetData(drawCellArgs);
 
-            edgesCount = (cellsCount - 4) * 3 + 6;
+            edgesCount = cellsCount * 3;
             edgesBufferRead = new ComputeBuffer(edgesCount, Marshal.SizeOf(typeof(Edge)), ComputeBufferType.Default);
             edgesBufferWrite = new ComputeBuffer(edgesCount, Marshal.SizeOf(typeof(Edge)), ComputeBufferType.Default);
 
@@ -111,7 +109,7 @@ namespace CellularGrowth.Dim3
             drawEdgeArgsBuffer = new ComputeBuffer(1, sizeof(uint) * drawEdgeArgs.Length, ComputeBufferType.IndirectArguments);
             drawEdgeArgsBuffer.SetData(drawEdgeArgs);
 
-            facesCount = (cellsCount - 4 ) * 2 + 4;
+            facesCount = cellsCount * 2;
             facesBufferRead = new ComputeBuffer(facesCount, Marshal.SizeOf(typeof(Face)), ComputeBufferType.Default);
             facesBufferWrite = new ComputeBuffer(facesCount, Marshal.SizeOf(typeof(Face)), ComputeBufferType.Default);
 
@@ -147,9 +145,6 @@ namespace CellularGrowth.Dim3
             activateKer = new Kernel(compute, "Activate");
             checkKer = new Kernel(compute, "Check");
             divideKer = new Kernel(compute, "Divide");
-
-            gradTexture = CreateGradient(gradient);
-            cellMaterial.SetTexture("_Gradient", gradTexture);
 
             InitCells(initCellsKer);
             InitEdges(initEdgesKer);
@@ -197,8 +192,6 @@ namespace CellularGrowth.Dim3
             drawCellArgsBuffer.Release();
             drawEdgeArgsBuffer.Release();
             drawFaceArgsBuffer.Release();
-
-            Destroy(gradTexture);
         }
 
         protected void OnGUI()
@@ -626,21 +619,6 @@ namespace CellularGrowth.Dim3
         }
 
         #endregion
-
-        protected Texture2D CreateGradient(Gradient grad, int size = 128)
-        {
-            var tex = new Texture2D(size, 1, TextureFormat.RGBAFloat, false);
-            tex.filterMode = FilterMode.Point;
-            tex.wrapMode = TextureWrapMode.Clamp;
-            var inv = 1f / (size - 1);
-            for(int x = 0; x < size; x++)
-            {
-                var t = x * inv;
-                tex.SetPixel(x, 0, grad.Evaluate(t));
-            }
-            tex.Apply();
-            return tex;
-        }
 
     }
 

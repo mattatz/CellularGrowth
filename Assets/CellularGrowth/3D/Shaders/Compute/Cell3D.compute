@@ -86,17 +86,16 @@ Cell spawn(int idx, inout Cell parent, float3 position)
     rh = max(rh, 0.1);
 
     Cell child = create();
+    child.radius = rh;
     child.position = position;
     child.velocity = child.force = float3(0, 0, 0);
-    // child.radius = rh;
-    float x = nrand(idx.xx + float2(0, _Time));
-    child.radius = rh;
-    child.threshold = rh * lerp(1.25, 2.0, x);
 
+    float x = nrand(idx.xx + float2(0, _Time));
+    child.threshold = rh * lerp(1.25, 2.0, x);
+    child.stress = 1.0 - EPSILON;
     child.type = parent.type;
 
     parent.radius = rh;
-    parent.stress = child.stress = 1.0 - EPSILON;
 
     return child;
 }
@@ -549,7 +548,7 @@ void UpdateCells (uint3 id : SV_DispatchThreadID)
 
     // grow
     // c.radius = min(c.threshold, c.radius + c.radius * _DT * 0.5);
-    c.radius = min(c.threshold, c.radius + _DT * 0.1);
+    c.radius = min(c.threshold, c.radius + _DT);
     c.radius = max(0.1, c.radius);
 
     /*
@@ -571,6 +570,7 @@ void UpdateCells (uint3 id : SV_DispatchThreadID)
         c.velocity = float3(0, 0, 0);
     }
     c.force = float3(0, 0, 0);
+    c.stress = saturate(c.stress - _DT * 0.5);
     _Cells[idx] = c;
 }
 
@@ -730,6 +730,7 @@ void Check (uint3 id : SV_DispatchThreadID)
         return;
     }
 
+    // write "false flag" only
     if (ca.dividable && cb.dividable)
     {
         if (ca.links < cb.links)
@@ -744,8 +745,8 @@ void Check (uint3 id : SV_DispatchThreadID)
         }
 
         /*
+        // random
         float x = nrand(id.xy + float2(0, _Time));
-        // write only if flag to false
         if (x < 0.5)
         {
             ca.dividable = false;
@@ -756,6 +757,7 @@ void Check (uint3 id : SV_DispatchThreadID)
             _Cells[e.b] = cb;
         }
         */
+
     }
 }
 
@@ -840,19 +842,6 @@ void DivideNetwork(inout Cell c, int idx)
         // get edge without opposite_cell in cur_face
         int ie = get_opposite_edge_of_cell_in_face(_FacesRead[cur_face], opposite_cell);
         cur_neighbor = get_neighbor_from_edge(neighbors, neighbor_count, ie);
-
-        /*
-        int ie = get_next_edge_from_neighbor(idx, _FacesRead[cur_face], cur_neighbor);
-        for (int j = 0; j < neighbor_count; j++)
-        {
-            if (neighbors[j].edge == ie)
-            {
-                cur_neighbor = neighbors[j];
-                break;
-            }
-        }
-        */
-
         cur_face = get_opposite_face_from_edge(faces, faces_count, cur_neighbor, cur_face);
         if (cur_face < 0)
         {

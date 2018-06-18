@@ -3,8 +3,8 @@
 
 	Properties
 	{
-		_Color ("Color", Color) = (1, 1, 1, 1)
-		_Gradient ("Gradient", 2D) = "white" {}
+    _Base ("Base", Color) = (0.5, 0.5, 0.5, 1)
+		_Highlight ("Highlight", Color) = (1, 1, 1, 1)
     _Size ("Size", Range(0.0, 1.0)) = 0.75
 	}
 
@@ -47,12 +47,10 @@
 			};
 
 			StructuredBuffer<Cell> _Cells;
-			float4 _Color;
+			float4 _Base, _Highlight;
       float _Size;
 
       float4x4 _World2Local, _Local2World;
-
-      sampler2D _Gradient;
 
       void setup() {
         unity_WorldToObject = _World2Local;
@@ -71,14 +69,10 @@
         OUT.uv = IN.uv - 0.5;
         OUT.normal = IN.normal;
 
-        float u = (cell.links * 0.2);
-        // float u = saturate(nrand(float2(iid, 0)));
-        // float4 grad = tex2Dlod(_Gradient, float4(u, 0.5, 0, 0));
-        float4 grad = float4(hsv2rgb(float3(fmod(u, 1.0), 1, 1)), 1);
-
-        float vl = saturate(length(cell.velocity));
-        OUT.color = lerp(grad, _Color, vl);
-        // OUT.color = lerp(float4(0, 0, 1, 1), float4(1, 0, 0, 1), cell.dividable);
+        // float u = (cell.links * 0.2);
+        // float4 grad = float4(hsv2rgb(float3(fmod(u, 1.0), 1, 1)), 1);
+        // float vl = saturate(length(cell.velocity));
+        OUT.color = lerp(_Base, _Highlight, saturate(cell.stress));
 
 				return OUT;
 			}
