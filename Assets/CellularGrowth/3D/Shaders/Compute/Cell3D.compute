@@ -1,0 +1,1115 @@
+﻿#pragma kernel InitCells
+#pragma kernel ResetCells
+#pragma kernel EmitCells
+#pragma kernel InteractCells
+#pragma kernel UpdateCells
+#pragma kernel CopyCells
+
+#pragma kernel InitEdges
+#pragma kernel ResetEdges
+#pragma kernel UpdateEdges
+#pragma kernel RemoveEdges
+#pragma kernel CopyEdges
+
+#pragma kernel InitFaces
+#pragma kernel ResetFaces
+#pragma kernel RemoveFaces
+#pragma kernel CopyFaces
+
+#pragma kernel InitTetrahedron
+#pragma kernel InitHexahedron
+
+#pragma kernel RemoveCells
+
+#pragma kernel Activate
+#pragma kernel Check
+#pragma kernel Divide
+
+#define THREAD [numthreads(256, 1, 1)]
+#define EPSILON 0.00001
+
+#include "../Common/Random.cginc"
+#include "../Common/Cell.cginc"
+#include "../Common/Edge.cginc"
+#include "../Common/Face.cginc"
+
+struct Neighbor
+{
+    int edge;
+    int cell;
+};
+
+AppendStructuredBuffer<uint> _CellPoolAppend;
+ConsumeStructuredBuffer<uint> _CellPoolConsume;
+StructuredBuffer<Cell> _CellsRead;
+RWStructuredBuffer<Cell> _Cells;
+int _EmitCount, _CellsCount;
+int _EmitType;
+
+AppendStructuredBuffer<uint> _EdgePoolAppend;
+ConsumeStructuredBuffer<uint> _EdgePoolConsume;
+StructuredBuffer<Edge> _EdgesRead;
+RWStructuredBuffer<Edge> _Edges;
+int _EdgesCount;
+
+AppendStructuredBuffer<uint> _FacePoolAppend;
+ConsumeStructuredBuffer<uint> _FacePoolConsume;
+StructuredBuffer<Face> _FacesRead;
+RWStructuredBuffer<Face> _Faces;
+int _FacesCount;
+
+float _DT, _Time;
+float _Limit, _Drag;
+float _Rate;
+float4 _Point;
+
+int _DividableLinks;
+
+Cell create()
+{
+    Cell c;
+    c.position = float3(0, 0, 0);
+    c.velocity = c.force = float3(0, 0, 0);
+    c.radius = c.threshold = 1;
+    c.stress = 0;
+    c.type = 0;
+    c.links = 0;
+    c.faces = 0;
+    c.alive = true;
+    c.dividable = false;
+    return c;
+}
+
+Cell spawn(int idx, inout Cell parent, float3 position)
+{
+    float rh = parent.radius * 0.5;
+    rh = max(rh, 0.1);
+
+    Cell child = create();
+    child.position = position;
+    child.velocity = child.force = float3(0, 0, 0);
+    // child.radius = rh;
+    float x = nrand(idx.xx + float2(0, _Time));
+    child.radius = rh;
+    child.threshold = rh * lerp(1.25, 2.0, x);
+
+    child.type = parent.type;
+
+    parent.radius = rh;
+    parent.stress = child.stress = 1.0 - EPSILON;
+
+    return child;
+}
+
+uint connect(int a, int b)
+{
+    uint idx = _EdgePoolConsume.Consume();
+
+    Edge e;
+    e.a = a;
+    e.b = b;
+    e.fa = e.fb = float3(0, 0, 0);
+    e.removable = false;
+    e.alive = true;
+    _Edges[idx] = e;
+
+    return idx;
+}
+
+uint make_face(int c0, int c1, int c2, int e0, int e1, int e2)
+{
+    uint idx = _FacePoolConsume.Consume();
+
+    Face face;
+    face.c0 = c0;
+    face.c1 = c1;
+    face.c2 = c2;
+    face.e0 = e0;
+    face.e1 = e1;
+    face.e2 = e2;
+    face.removable = false;
+    face.alive = true;
+    _Faces[idx] = face;
+
+    return idx;
+}
+
+int count_links(int idx, inout Cell c)
+{
+    int opposite = -1;
+    c.links = 0;
+    for (int i = 0; i < _EdgesCount; i++)
+    {
+        Edge e = _Edges[i];
+        if (e.alive && !e.removable)
+        {
+            if (e.a == idx)
+            {
+                opposite = e.b;
+                c.force += e.fa;
+                c.links++;
+            }
+            else if (e.b == idx)
+            {
+                opposite = e.a;
+                c.force += e.fb;
+                c.links++;
+            }
+        }
+    }
+    return opposite;
+}
+
+
+static const int kEdgeNeighborLimit = 32;
+void pickup_neighbors(int ic, out Neighbor neighbors[kEdgeNeighborLimit], out int neighborCount)
+{
+    for (int i = 0; i < _EdgesCount; i++)
+    {
+        Edge e = _EdgesRead[i];
+        if (e.alive && has_cell_in_edge(e, ic))
+        {
+            Neighbor n;
+            n.edge = i;
+            n.cell = opposite_cell_in_edge(e, ic);
+            neighbors[neighborCount] = n;
+            neighborCount++;
+            if (neighborCount >= kEdgeNeighborLimit)
+            {
+                break;
+            }
+        }
+    }
+}
+
+Neighbor get_neighbor_with_index(int ic, int index)
+{
+    Neighbor n;
+    n.edge = -1;
+    n.cell = -1;
+
+    int counter = 0;
+    for (int i = 0; i < _EdgesCount; i++)
+    {
+        Edge e = _EdgesRead[i];
+        if (e.alive && has_cell_in_edge(e, ic))
+        {
+            if (counter == index)
+            {
+                n.edge = i;
+                n.cell = opposite_cell_in_edge(e, ic);
+                break;
+            }
+            counter++;
+        }
+    }
+
+    return n;
+}
+
+static const int kFaceMax = 32;
+void pickup_faces_of_cell(int ic, out int faces[kFaceMax], out int faces_count)
+{
+    faces_count = 0;
+    for (int i = 0; i < _FacesCount; i++)
+    {
+        Face f = _FacesRead[i];
+        if (f.alive && has_cell_in_face(f, ic))
+        {
+            faces[faces_count] = i;
+            faces_count++;
+            if (faces_count >= kFaceMax)
+            {
+                break;
+            }
+        }
+    }
+}
+
+
+static const int kFaceNeighborLimit = 2;
+void pickup_faces_of_edge(int ie, out int faces[kFaceNeighborLimit])
+{
+    int counter = 0;
+    for (int i = 0; i < _FacesCount; i++)
+    {
+        Face f = _FacesRead[i];
+        if (f.alive && has_edge_in_face(f, ie))
+        {
+            faces[counter] = i;
+            counter++;
+            if (counter >= kFaceNeighborLimit)
+            {
+                break;
+            }
+        }
+    }
+}
+
+void pickup_faces_of_neighbor(Neighbor neighbor, int candidates[kFaceMax], int faces_count, out int faces[kFaceNeighborLimit])
+{
+    int counter = 0;
+    for (int i = 0; i < faces_count; i++)
+    {
+        int iface  = candidates[i];
+        Face f = _FacesRead[iface];
+        if (f.alive && has_edge_in_face(f, neighbor.edge))
+        {
+            faces[counter] = iface;
+            counter++;
+            if (counter >= kFaceNeighborLimit)
+            {
+                break;
+            }
+        }
+    }
+}
+
+int get_opposite_cell_in_face_of_edge(Face f, Edge e)
+{
+    if (!has_cell_in_edge(e, f.c0))
+    {
+        return f.c0;
+    } else if (!has_cell_in_edge(e, f.c1))
+    {
+        return f.c1;
+    }
+    return f.c2;
+}
+
+int get_edge_index_in_face_of_cells(Face f, int ca, int cb)
+{
+    Edge e0 = _EdgesRead[f.e0];
+    if (has_cell_in_edge(e0, ca) && has_cell_in_edge(e0, cb))
+    {
+        return f.e0;
+    }
+
+    Edge e1 = _EdgesRead[f.e1];
+    if (has_cell_in_edge(e1, ca) && has_cell_in_edge(e1, cb))
+    {
+        return f.e1;
+    }
+
+    return f.e2;
+}
+
+int get_opposite_edge_of_cell_in_face(Face f, int ic)
+{
+    if (!has_cell_in_edge(_EdgesRead[f.e0], ic))
+    {
+        return f.e0;
+    } else if (!has_cell_in_edge(_EdgesRead[f.e1], ic))
+    {
+        return f.e1;
+    }
+    return f.e2;
+}
+
+Neighbor get_neighbor_from_edge(Neighbor neighbors[kEdgeNeighborLimit], int neighbor_count, int ie)
+{
+    for (int i = 0; i < neighbor_count; i++)
+    {
+        if (neighbors[i].edge == ie)
+        {
+            return neighbors[i];
+        }
+    }
+    return neighbors[0];
+}
+
+int get_opposite_face_from_edge(int faces[kFaceMax], int faces_count, Neighbor neighbor, int f)
+{
+    for (int i = 0; i < faces_count; i++)
+    {
+        int cand = faces[i];
+        if (cand != f && has_edge_in_face(_FacesRead[cand], neighbor.edge))
+        {
+            return cand;
+        }
+    }
+    return -1;
+}
+
+int get_next_edge_from_neighbor(int ic, Face f, Neighbor neighbor)
+{
+    int e0 = f.e0;
+    int e1 = f.e1;
+    int e2 = f.e2;
+    if (e0 != neighbor.edge && has_cell_in_edge(_EdgesRead[e0], ic))
+    {
+        return e0;
+    } else if (e1 != neighbor.edge && has_cell_in_edge(_EdgesRead[e1], ic))
+    {
+        return e1;
+    }
+    return e2;
+}
+
+int get_left_edge_in_face(Face f, int ie0, int ie1)
+{
+    int e0 = f.e0;
+    int e1 = f.e1;
+    int e2 = f.e2;
+    if (e0 != ie0 && e0 != ie1)
+    {
+        return e0;
+    }
+    else if (e1 != ie0 && e1 != ie1)
+    {
+        return e1;
+    }
+    else if (e2 != ie0 && e2 != ie1)
+    {
+        return e2;
+    }
+    return -1;
+}
+
+float3 get_normal_of_face(Face f)
+{
+    Cell c0 = _CellsRead[f.c0];
+    Cell c1 = _CellsRead[f.c1];
+    Cell c2 = _CellsRead[f.c2];
+    float3 d0 = c1.position - c0.position;
+    float3 d1 = c2.position - c1.position;
+    return normalize(cross(d1, d0));
+}
+
+int count_faces(int idx)
+{
+    int counter = 0;
+    for (int i = 0; i < _FacesCount; i++)
+    {
+        Face f = _Faces[i];
+        if (f.alive && has_cell_in_face(f, idx))
+        {
+            counter++;
+        }
+    }
+    return counter;
+}
+
+void remove(int idx)
+{
+    for (int i = 0; i < _EdgesCount; i++)
+    {
+        Edge e = _Edges[i];
+        if (e.alive && has_cell_in_edge(e, idx))
+        {
+            e.alive = false;
+            _Edges[i] = e;
+            _EdgePoolAppend.Append(i);
+        }
+    }
+}
+
+float proj_distance(float2 a, float2 b, float2 p, out float2 proj)
+{
+    float2 ba = b - a;
+    float lba = length(ba);
+    float2 nba = normalize(ba);
+
+    float2 pa = p.xy - a;
+    float l = dot(pa, nba);
+    proj = nba * l + a;
+    return distance(p.xy, proj);
+}
+
+bool dividable(uint id, Cell cell)
+{
+    /*
+    float3 repulse = _Point.xy - cell.position.xy;
+    float lr = length(repulse);
+    if (lr > _Point.z)
+        return false;
+    */
+
+    float x = nrand(id.xx, _Time);
+    // float nl = saturate(1.0 - lr * _Point.w);
+    // float growRate = saturate(cell.threshold / cell.radius);
+    // if (x > _Rate * growRate)
+    if (x >= _Rate)
+        return false;
+
+    return true;
+}
+
+THREAD
+void InitCells (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (idx >= _CellsCount) return;
+
+    Cell c = create();
+    c.alive = false;
+    _Cells[idx] = c;
+    _CellPoolAppend.Append(idx);
+}
+
+THREAD
+void ResetCells (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (idx >= _CellsCount) return;
+
+    Cell c = _Cells[idx];
+    if (c.alive)
+    {
+        c.alive = false;
+        _CellPoolAppend.Append(idx);
+    }
+    _Cells[idx] = c;
+}
+
+THREAD
+void EmitCells (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_EmitCount) return;
+
+    float3 offset = random_point_on_sphere(id.xx + float2(0, _Time));
+
+    uint idx = _CellPoolConsume.Consume();
+    Cell c = create();
+    c.position = offset;
+    c.stress = 1.0 - EPSILON;
+    c.type = _EmitType;
+    _Cells[idx] = c;
+}
+
+THREAD
+void InteractCells (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx)
+        return;
+
+    Cell c = _CellsRead[idx];
+    if (!c.alive)
+    {
+        _Cells[idx] = c;
+        return;
+    }
+
+    float neighborDist = c.radius * 5;
+    int neighborCount = 0;
+    float3 neighborCenter = float3(0, 0, 0);
+
+    count_links(idx, c);
+
+    for (int i = 0; i < _CellsCount; i++)
+    {
+        if (idx == i)
+            continue;
+
+        Cell other = _CellsRead[i];
+        if (!other.alive)
+            continue;
+
+        float3 dir = c.position - other.position;
+        float l = length(dir);
+        float r = c.radius + other.radius;
+        if (0 < l && l < r)
+        {
+            c.force += normalize(dir) * (r - l);
+        }
+
+        if (0 < l && l < other.radius + neighborDist)
+        {
+            neighborCenter += other.position;
+            neighborCount += 1;
+        }
+    }
+
+    // repulsion from neighbors center
+    if (neighborCount > 0)
+    {
+        neighborCenter /= neighborCount;
+        float3 dir = c.position - neighborCenter;
+        float len = length(dir);
+        if (len > 0)
+        {
+            c.force += (normalize(dir) * 0.1);
+        }
+    }
+
+    _Cells[idx] = c;
+}
+
+THREAD
+void UpdateCells (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx)
+        return;
+
+    Cell c = _Cells[idx];
+    if (!c.alive)
+        return;
+
+    // grow
+    // c.radius = min(c.threshold, c.radius + c.radius * _DT * 0.5);
+    c.radius = min(c.threshold, c.radius + _DT * 0.1);
+    c.radius = max(0.1, c.radius);
+
+    /*
+    float3 repulse = _Point.xyz - c.position.xy;
+    float lr = length(repulse);
+    float nl = saturate(1.0 - lr * _Point.w);
+    c.force += - normalize(repulse) * nl * 0.1;
+    */
+
+    c.velocity += c.force;
+    float3 vel = c.velocity * _DT;
+    float vl = length(vel);
+    if (0 < vl)
+    {
+        c.position += normalize(vel) * min(vl, _Limit);
+        c.velocity = normalize(c.velocity) * min(length(c.velocity) * _Drag, _Limit);
+    } else
+    {
+        c.velocity = float3(0, 0, 0);
+    }
+    c.force = float3(0, 0, 0);
+    _Cells[idx] = c;
+}
+
+THREAD
+void CopyCells (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx)
+        return;
+
+    Cell c = _CellsRead[idx];
+    _Cells[idx] = c;
+}
+
+THREAD
+void InitEdges (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_EdgesCount <= idx) return;
+
+    _Edges[idx].alive = false;
+    _EdgePoolAppend.Append(idx);
+}
+
+THREAD
+void ResetEdges (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (idx >= _EdgesCount) return;
+
+    Edge e = _Edges[idx];
+    if (e.alive)
+    {
+        e.removable = false;
+        e.alive = false;
+        _EdgePoolAppend.Append(idx);
+    }
+    _Edges[idx] = e;
+}
+
+
+THREAD
+void UpdateEdges (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_EdgesCount <= idx)
+        return;
+
+    Edge e = _Edges[idx];
+    e.fa = e.fb = float3(0, 0, 0);
+
+    if (!e.alive || e.removable)
+    {
+        _Edges[idx] = e;
+        return;
+    }
+
+    Cell ca = _Cells[e.a];
+    Cell cb = _Cells[e.b];
+    if (!ca.alive || !cb.alive)
+    {
+        _Edges[idx] = e;
+        return;
+    }
+
+    float3 dir = ca.position - cb.position;
+    float r = ca.radius + cb.radius;
+    float len = length(dir);
+    if (abs(len - r) > 0)
+    // if (len > r)
+    {
+        float l = ((len - r) / r);
+        float3 f = normalize(dir) * min(abs(l), 1.0) * sign(l);
+        // float3 f = normalize(dir) * l * 5.0;
+        e.fa += -f;
+        e.fb += f;
+    }
+
+    _Edges[idx] = e;
+}
+
+THREAD
+void RemoveEdges (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_EdgesCount <= idx)
+        return;
+
+    Edge e = _Edges[idx];
+    if (e.alive && e.removable)
+    {
+        e.removable = false;
+        e.alive = false;
+        _EdgePoolAppend.Append(idx);
+        _Edges[idx] = e;
+    }
+}
+
+THREAD
+void CopyEdges (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_EdgesCount <= idx)
+        return;
+
+    Edge e = _EdgesRead[idx];
+    _Edges[idx] = e;
+}
+
+THREAD
+void RemoveCells (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx)
+        return;
+
+    Cell c = _Cells[idx];
+    // if (c.alive && c.stress >= 1.0 && c.links <= 1)
+    if (c.alive && c.stress >= 1.0)
+    {
+        c.alive = false;
+        _CellPoolAppend.Append(idx);
+    }
+    _Cells[idx] = c;
+}
+
+THREAD
+void Activate (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx) return;
+
+    Cell c = _Cells[idx];
+    if (!c.alive) return;
+
+    // c.dividable = (c.links <= 4) && dividable(id.x, c);
+    // c.dividable = (c.links >= 4) && dividable(id.x, c);
+    c.dividable = (3 <= c.links) && dividable(id.x, c);
+    _Cells[idx] = c;
+}
+
+THREAD
+void Check (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_EdgesCount <= idx)
+        return;
+
+    Edge e = _Edges[idx];
+    if (!e.alive || e.removable)
+        return;
+
+    Cell ca = _CellsRead[e.a];
+    Cell cb = _CellsRead[e.b];
+    if (!ca.alive || !ca.alive)
+    {
+        return;
+    }
+
+    if (ca.dividable && cb.dividable)
+    {
+        if (ca.links < cb.links)
+        {
+            ca.dividable = false;
+            _Cells[e.a] = ca;
+        }
+        else
+        {
+            cb.dividable = false;
+            _Cells[e.b] = cb;
+        }
+
+        /*
+        float x = nrand(id.xy + float2(0, _Time));
+        // write only if flag to false
+        if (x < 0.5)
+        {
+            ca.dividable = false;
+            _Cells[e.a] = ca;
+        } else
+        {
+            cb.dividable = false;
+            _Cells[e.b] = cb;
+        }
+        */
+    }
+}
+
+void DivideLink(inout Cell c, int idx)
+{
+    Neighbor neighbors[kEdgeNeighborLimit];
+    int neighbor_count;
+    pickup_neighbors(idx, neighbors, neighbor_count);
+
+    float x = nrand(idx.xx + float2(_Time, 0));
+    x = min(x, 0.9999);
+    Neighbor neighbor = neighbors[floor(x * neighbor_count)];
+    int faces[kFaceNeighborLimit];
+    pickup_faces_of_edge(neighbor.edge, faces);
+
+    Face f1 = _FacesRead[faces[0]];
+    Face f2 = _FacesRead[faces[1]];
+
+    int c0 = neighbor.cell;
+    int c1 = get_opposite_cell_in_face_of_edge(f1, _EdgesRead[neighbor.edge]);
+    int c2 = get_opposite_cell_in_face_of_edge(f2, _EdgesRead[neighbor.edge]);
+
+    int ie_p_c1 = get_edge_index_in_face_of_cells(f1, idx, c1);
+    int ie_p_c2 = get_edge_index_in_face_of_cells(f2, idx, c2);
+    int ie_c0_c1 = get_edge_index_in_face_of_cells(f1, c0, c1);
+    int ie_c0_c2 = get_edge_index_in_face_of_cells(f2, c0, c2);
+
+    Cell child = spawn(idx, c, (c.position + _CellsRead[neighbor.cell].position) * 0.5);
+    uint nidx = _CellPoolConsume.Consume();
+    _Cells[nidx] = child;
+
+    // delete 1 link + 2 face, create 4 links + 4 faces
+    int ie_p_n = connect(idx, nidx);
+    int ie_c0_n = connect(c0, nidx);
+    int ie_c1_n = connect(c1, nidx);
+    int ie_c2_n = connect(c2, nidx);
+
+    make_face(idx, c1, nidx, ie_p_c1, ie_c1_n, ie_p_n);
+    make_face(idx, nidx, c2, ie_p_n, ie_c2_n, ie_p_c2);
+    make_face(nidx, c1, c0, ie_c1_n, ie_c0_c1, ie_c0_n);
+    make_face(nidx, c0, c2, ie_c0_n, ie_c0_c2, ie_c2_n);
+
+    Edge e = _EdgesRead[neighbor.edge];
+    e.removable = true;
+    _Edges[neighbor.edge] = e;
+
+    f1.removable = true;
+    f2.removable = true;
+    _Faces[faces[0]] = f1;
+    _Faces[faces[1]] = f2;
+}
+
+void DivideNetwork(inout Cell c, int idx)
+{
+    Neighbor neighbors[kEdgeNeighborLimit];
+    Neighbor sorted[kEdgeNeighborLimit];
+    int neighbor_count;
+    pickup_neighbors(idx, neighbors, neighbor_count);
+
+    int faces[kFaceMax];
+    int faces_count;
+    pickup_faces_of_cell(idx, faces, faces_count);
+
+    float x = saturate(nrand(float2(idx, _Time)));
+    int start = min(neighbor_count - 1, round(neighbor_count * x));
+    int size = round(neighbor_count * 0.5);
+    // int size = max(2, floor(neighbor_count * 0.5));
+
+    // get first neighbor edge and face
+    Neighbor cur_neighbor = neighbors[start];
+    int neighbor_faces[kFaceNeighborLimit];
+    pickup_faces_of_neighbor(cur_neighbor, faces, faces_count, neighbor_faces);
+    int cur_face = neighbor_faces[0];
+
+    int i, j;
+    for (i = 0; i < neighbor_count; i++)
+    {
+        sorted[i] = cur_neighbor;
+
+        int opposite_cell = cur_neighbor.cell;
+
+        // get edge without opposite_cell in cur_face
+        int ie = get_opposite_edge_of_cell_in_face(_FacesRead[cur_face], opposite_cell);
+        cur_neighbor = get_neighbor_from_edge(neighbors, neighbor_count, ie);
+
+        /*
+        int ie = get_next_edge_from_neighbor(idx, _FacesRead[cur_face], cur_neighbor);
+        for (int j = 0; j < neighbor_count; j++)
+        {
+            if (neighbors[j].edge == ie)
+            {
+                cur_neighbor = neighbors[j];
+                break;
+            }
+        }
+        */
+
+        cur_face = get_opposite_face_from_edge(faces, faces_count, cur_neighbor, cur_face);
+        if (cur_face < 0)
+        {
+            // cancel
+            break;
+        }
+    }
+
+    if (i <= size - 1)
+    {
+        return;
+    }
+
+    for (i = 0; i < size - 1; i++)
+    {
+        Neighbor link = sorted[i];
+        Neighbor link2 = sorted[i + 1];
+
+        bool found = false;
+        for (j = 0; j < faces_count; j++)
+        {
+            int iface = faces[j];
+            Face f = _FacesRead[iface];
+            if (has_edge_in_face(f, link.edge) && has_edge_in_face(f, link2.edge))
+            {
+                found = true;
+                break;
+            }
+        }
+
+        if (!found)
+        {
+            // cancel
+            return;
+        }
+    }
+
+    // create a child
+    float3 p = c.position;
+    for (i = 0; i < size; i++)
+    {
+        Neighbor link = sorted[i];
+        p += _CellsRead[link.cell].position;
+    }
+    Cell child = spawn(idx, c, p / (size + 1));
+    uint nidx = _CellPoolConsume.Consume();
+    _Cells[nidx] = child;
+
+    // remove old edges
+    for (i = 1; i < size - 1; i++)
+    {
+        Neighbor link = sorted[i];
+        Edge e = _EdgesRead[link.edge];
+        e.removable = true;
+        _Edges[link.edge] = e;
+    }
+
+    // connect neighbor cells to child
+    int edges_to_child[kEdgeNeighborLimit];
+    for (i = 0; i < size; i++)
+    {
+        Neighbor link = sorted[i];
+        edges_to_child[i] = connect(link.cell, nidx);
+    }
+
+    // remove a face between link and link2
+    // and make a face for (link.cell, link2.cell, child)
+    for (i = 0; i < size - 1; i++)
+    {
+        Neighbor link = sorted[i];
+        Neighbor link2 = sorted[i + 1];
+
+        for (j = 0; j < faces_count; j++)
+        {
+            int iface  = faces[j];
+            Face f = _FacesRead[iface];
+            if (has_edge_in_face(f, link.edge) && has_edge_in_face(f, link2.edge))
+            {
+                f.removable = true;
+                _Faces[iface] = f;
+
+                // edge between link.cell & link2.cell
+                int ie = get_left_edge_in_face(f, link.edge, link2.edge);
+                if (ie >= 0)
+                {
+                    make_face(link.cell, link2.cell, nidx, ie, edges_to_child[i + 1], edges_to_child[i]);
+                }
+                break;
+            }
+        }
+    }
+
+    int edge_parent_to_child = connect(idx, nidx);
+    make_face(idx, sorted[0].cell, nidx, sorted[0].edge, edges_to_child[0], edge_parent_to_child);
+    make_face(idx, sorted[size - 1].cell, nidx, sorted[size - 1].edge, edges_to_child[size - 1], edge_parent_to_child);
+}
+
+
+[numthreads(32, 1, 1)]
+void Divide (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_CellsCount <= idx)
+        return;
+
+    Cell c = _CellsRead[idx];
+    if (!c.alive || !c.dividable)
+    {
+        return;
+    }
+
+    // DivideLink(c, idx);
+    DivideNetwork(c, idx);
+
+    c.dividable = false;
+    _Cells[idx] = c;
+}
+
+THREAD
+void InitFaces (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_FacesCount <= idx) return;
+
+    _Faces[idx].alive = false;
+    _FacePoolAppend.Append(idx);
+}
+
+THREAD
+void ResetFaces (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (idx >= _FacesCount) return;
+
+    Face f = _Faces[idx];
+    if (f.alive)
+    {
+        f.alive = false;
+        _FacePoolAppend.Append(idx);
+    }
+    _Faces[idx] = f;
+}
+
+THREAD
+void RemoveFaces (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_FacesCount <= idx)
+        return;
+
+    Face f = _Faces[idx];
+    if (f.alive && f.removable)
+    {
+        f.removable = false;
+        f.alive = false;
+        _FacePoolAppend.Append(idx);
+        _Faces[idx] = f;
+    }
+}
+
+THREAD
+void CopyFaces (uint3 id : SV_DispatchThreadID)
+{
+    int idx = (int) id.x;
+    if (_FacesCount <= idx)
+        return;
+
+    Face f = _FacesRead[idx];
+    _Faces[idx] = f;
+}
+
+[numthreads(1, 1, 1)]
+void InitTetrahedron (uint3 id : SV_DispatchThreadID)
+{
+    uint ic0 = _CellPoolConsume.Consume();
+    uint ic1 = _CellPoolConsume.Consume();
+    uint ic2 = _CellPoolConsume.Consume();
+    uint ic3 = _CellPoolConsume.Consume();
+
+    Cell c0 = create();
+    Cell c1 = create();
+    Cell c2 = create();
+    Cell c3 = create();
+
+    c0.position = float3( 0, 1,  0.0);
+    c1.position = float3(-1, 0, -0.5);
+    c2.position = float3( 1, 0, -0.5);
+    c3.position = float3( 0, 0,  0.5);
+
+    _Cells[ic0] = c0;
+    _Cells[ic1] = c1;
+    _Cells[ic2] = c2;
+    _Cells[ic3] = c3;
+
+    uint ie01 = connect(ic0, ic1);
+    uint ie02 = connect(ic0, ic2);
+    uint ie03 = connect(ic0, ic3);
+
+    uint ie12 = connect(ic1, ic2);
+    uint ie13 = connect(ic1, ic3);
+
+    uint ie23 = connect(ic2, ic3);
+
+    make_face(ic0, ic2, ic1, ie02, ie12, ie01);
+    make_face(ic0, ic3, ic2, ie03, ie23, ie02);
+    make_face(ic0, ic1, ic3, ie01, ie13, ie03);
+    make_face(ic1, ic2, ic3, ie12, ie23, ie13);
+}
+
+[numthreads(1, 1, 1)]
+void InitHexahedron (uint3 id : SV_DispatchThreadID)
+{
+    uint ic0 = _CellPoolConsume.Consume();
+    uint ic1 = _CellPoolConsume.Consume();
+    uint ic2 = _CellPoolConsume.Consume();
+    uint ic3 = _CellPoolConsume.Consume();
+    uint ic4 = _CellPoolConsume.Consume();
+
+    Cell c0 = create();
+    Cell c1 = create();
+    Cell c2 = create();
+    Cell c3 = create();
+    Cell c4 = create();
+
+    c0.position = float3( 0, 1,  0.0);
+    c1.position = float3(-1, 0, -0.5);
+    c2.position = float3( 1, 0, -0.5);
+    c3.position = float3( 0, 0,  0.5);
+    c4.position = float3( 0, -1, 0.0);
+
+    _Cells[ic0] = c0;
+    _Cells[ic1] = c1;
+    _Cells[ic2] = c2;
+    _Cells[ic3] = c3;
+    _Cells[ic4] = c4;
+
+    uint ie01 = connect(ic0, ic1);
+    uint ie02 = connect(ic0, ic2);
+    uint ie03 = connect(ic0, ic3);
+
+    uint ie12 = connect(ic1, ic2);
+    uint ie13 = connect(ic1, ic3);
+
+    uint ie23 = connect(ic2, ic3);
+
+    make_face(ic0, ic2, ic1, ie02, ie12, ie01);
+    make_face(ic0, ic3, ic2, ie03, ie23, ie02);
+    make_face(ic0, ic1, ic3, ie01, ie13, ie03);
+
+    uint ie14 = connect(ic1, ic4);
+    uint ie24 = connect(ic2, ic4);
+    uint ie34 = connect(ic3, ic4);
+
+    make_face(ic4, ic3, ic1, ie34, ie13, ie14);
+    make_face(ic4, ic2, ic3, ie24, ie23, ie34);
+    make_face(ic4, ic1, ic2, ie14, ie12, ie24);
+}
+
+
+
