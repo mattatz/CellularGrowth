@@ -1,8 +1,8 @@
 ﻿#pragma kernel InitCells
 #pragma kernel ResetCells
-#pragma kernel EmitCells
 #pragma kernel InteractCells
 #pragma kernel UpdateCells
+#pragma kernel RemoveCells
 #pragma kernel CopyCells
 
 #pragma kernel InitEdges
@@ -18,8 +18,6 @@
 
 #pragma kernel InitTetrahedron
 #pragma kernel InitHexahedron
-
-#pragma kernel RemoveCells
 
 #pragma kernel Activate
 #pragma kernel Check
@@ -458,21 +456,6 @@ void ResetCells (uint3 id : SV_DispatchThreadID)
         c.alive = false;
         _CellPoolAppend.Append(idx);
     }
-    _Cells[idx] = c;
-}
-
-THREAD
-void EmitCells (uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= (uint)_EmitCount) return;
-
-    float3 offset = random_point_on_sphere(id.xx + float2(0, _Time));
-
-    uint idx = _CellPoolConsume.Consume();
-    Cell c = create();
-    c.position = offset;
-    c.stress = 1.0 - EPSILON;
-    c.type = _EmitType;
     _Cells[idx] = c;
 }
 

@@ -13,9 +13,6 @@ namespace CellularGrowth.Dim3
 
     public class CellularGrowth : MonoBehaviour {
 
-        public ComputeBuffer CellsBuffer { get { return cellsBufferRead; } }
-        public ComputeBuffer EdgesBuffer { get { return edgesBufferRead; } }
-
         [SerializeField] protected GUISkin skin;
         [SerializeField] protected Mesh mesh;
         [SerializeField] protected int cellsCount = 2 << 15;
@@ -61,19 +58,31 @@ namespace CellularGrowth.Dim3
 
         #region Kernels
 
-        protected Kernel 
-            initCellsKer, resetCellsKer, emitCellsKer, interactCellsKer, 
-            updateCellsKer, copyCellsKer;
+        protected enum KernelType
+        {
+            InitCells,
+            ResetCells,
+            InteractCells,
+            UpdateCells,
+            CopyCells,
 
-        protected Kernel 
-            initEdgesKer, resetEdgesKer, updateEdgesKer, 
-            removeEdgesKer, copyEdgesKer;
+            InitEdges,
+            ResetEdges,
+            UpdateEdges, 
+            RemoveEdges,
+            CopyEdges,
 
-        protected Kernel 
-            initFacesKer, resetFacesKer, removeFacesKer, copyFacesKer;
+            InitFaces,
+            ResetFaces,
+            RemoveFaces,
+            CopyFaces,
 
-        protected Kernel
-            activateKer, checkKer, divideKer;
+            Activate,
+            Check,
+            Divide,
+        };
+
+        protected Dictionary<KernelType, Kernel> kernels;
 
         #endregion
 
@@ -124,31 +133,15 @@ namespace CellularGrowth.Dim3
             drawFaceArgsBuffer = new ComputeBuffer(1, sizeof(uint) * drawFaceArgs.Length, ComputeBufferType.IndirectArguments);
             drawFaceArgsBuffer.SetData(drawFaceArgs);
 
-            initCellsKer = new Kernel(compute, "InitCells");
-            resetCellsKer = new Kernel(compute, "ResetCells");
-            emitCellsKer = new Kernel(compute, "EmitCells");
-            interactCellsKer = new Kernel(compute, "InteractCells");
-            updateCellsKer = new Kernel(compute, "UpdateCells");
-            copyCellsKer = new Kernel(compute, "CopyCells");
+            kernels = new Dictionary<KernelType, Kernel>();
+            foreach(var key in Enum.GetNames(typeof(KernelType)))
+            {
+                kernels.Add((KernelType)Enum.Parse(typeof(KernelType), key, true), new Kernel(compute, key));
+            }
 
-            initEdgesKer = new Kernel(compute, "InitEdges");
-            resetEdgesKer = new Kernel(compute, "ResetEdges");
-            updateEdgesKer = new Kernel(compute, "UpdateEdges");
-            removeEdgesKer = new Kernel(compute, "RemoveEdges");
-            copyEdgesKer = new Kernel(compute, "CopyEdges");
-
-            initFacesKer = new Kernel(compute, "InitFaces");
-            resetFacesKer = new Kernel(compute, "ResetFaces");
-            removeFacesKer = new Kernel(compute, "RemoveFaces");
-            copyFacesKer = new Kernel(compute, "CopyFaces");
-
-            activateKer = new Kernel(compute, "Activate");
-            checkKer = new Kernel(compute, "Check");
-            divideKer = new Kernel(compute, "Divide");
-
-            InitCells(initCellsKer);
-            InitEdges(initEdgesKer);
-            InitFaces(initFacesKer);
+            InitCells(kernels[KernelType.InitCells]);
+            InitEdges(kernels[KernelType.InitEdges]);
+            InitFaces(kernels[KernelType.InitFaces]);
             UpdatePoolCount();
 
             InitTetrahedron();
@@ -163,9 +156,9 @@ namespace CellularGrowth.Dim3
             var dt = Time.deltaTime;
             var t = Time.timeSinceLevelLoad;                
 
-            UpdateEdges(updateEdgesKer, dt);
-            InteractCells(interactCellsKer, cellPoolCount);
-            UpdateCells(updateCellsKer, cellPoolCount, dt);
+            UpdateEdges(kernels[KernelType.UpdateEdges], dt);
+            InteractCells(kernels[KernelType.InteractCells], cellPoolCount);
+            UpdateCells(kernels[KernelType.UpdateCells], cellPoolCount, dt);
 
             // if(Dividable()) Divide();
 
@@ -265,9 +258,9 @@ namespace CellularGrowth.Dim3
 
         protected void Reset()
         {
-            ResetCells(resetCellsKer);
-            ResetEdges(resetEdgesKer);
-            ResetFaces(resetFacesKer);
+            ResetCells(kernels[KernelType.ResetCells]);
+            ResetEdges(kernels[KernelType.ResetEdges]);
+            ResetFaces(kernels[KernelType.ResetFaces]);
             UpdatePoolCount();
 
             InitTetrahedron();
@@ -290,18 +283,18 @@ namespace CellularGrowth.Dim3
 
         public void Divide()
         {
-            Activate(activateKer, Time.timeSinceLevelLoad);
+            Activate(kernels[KernelType.Activate], Time.timeSinceLevelLoad);
 
-            CopyCells(copyCellsKer);
-            Check(checkKer, Time.timeSinceLevelLoad);
+            CopyCells(kernels[KernelType.CopyCells]);
+            Check(kernels[KernelType.Check], Time.timeSinceLevelLoad);
 
-            CopyCells(copyCellsKer);
-            CopyEdges(copyEdgesKer);
-            CopyFaces(copyFacesKer);
-            Divide(divideKer, Time.timeSinceLevelLoad);
+            CopyCells(kernels[KernelType.CopyCells]);
+            CopyEdges(kernels[KernelType.CopyEdges]);
+            CopyFaces(kernels[KernelType.CopyFaces]);
+            Divide(kernels[KernelType.Divide], Time.timeSinceLevelLoad);
 
-            RemoveEdges(removeEdgesKer);
-            RemoveFaces(removeFacesKer);
+            RemoveEdges(kernels[KernelType.RemoveEdges]);
+            RemoveFaces(kernels[KernelType.RemoveFaces]);
             UpdatePoolCount();
         }
 
@@ -594,6 +587,19 @@ namespace CellularGrowth.Dim3
         protected void InitHexahedron()
         {
             var ker = new Kernel(compute, "InitHexahedron");
+            compute.SetBuffer(ker.Index, "_Cells", cellsBufferRead);
+            compute.SetBuffer(ker.Index, "_CellPoolConsume", cellsPoolBuffer);
+            compute.SetBuffer(ker.Index, "_Edges", edgesBufferRead);
+            compute.SetBuffer(ker.Index, "_EdgePoolConsume", edgesPoolBuffer);
+            compute.SetBuffer(ker.Index, "_Faces", facesBufferRead);
+            compute.SetBuffer(ker.Index, "_FacePoolConsume", facesPoolBuffer);
+            compute.Dispatch(ker.Index, 1, 1, 1);
+        }
+
+        protected void InitMesh(Mesh mesh)
+        {
+            var ker = new Kernel(compute, "InitMesh");
+
             compute.SetBuffer(ker.Index, "_Cells", cellsBufferRead);
             compute.SetBuffer(ker.Index, "_CellPoolConsume", cellsPoolBuffer);
             compute.SetBuffer(ker.Index, "_Edges", edgesBufferRead);

@@ -56,21 +56,31 @@ namespace CellularGrowth.Dim2
         protected Texture2D gradTexture;
 
         #region Kernels
+        protected enum KernelType
+        {
+            InitCells,
+            ResetCells,
+            EmitCells,
+            InteractCells,
+            UpdateCells,
+            DivideCells,
 
-        protected Kernel 
-            initCellsKer, resetCellsKer, emitCellsKer, interactCellsKer, 
-            updateCellsKer, divideCellsKer;
+            RemoveCells,
+            RemoveCellsCircle,
+            RemoveCellsLine,
 
-        protected Kernel 
-            initEdgesKer, resetEdgesKer, updateEdgesKer, 
-            removeEdgesKer, copyEdgesKer;
+            InitEdges,
+            ResetEdges,
+            UpdateEdges, 
+            RemoveEdges,
+            CopyEdges,
 
-        protected Kernel
-            removeCellsKer,
-            removeCellsCircleKer, removeCellsLineKer;
+            Divide,
+            Wrap,
+            Hunt,
+        };
 
-        protected Kernel
-            divideKer, wrapKer, huntKer;
+        protected Dictionary<KernelType, Kernel> kernels;
 
         #endregion
 
@@ -105,35 +115,20 @@ namespace CellularGrowth.Dim2
             drawEdgeArgsBuffer = new ComputeBuffer(1, sizeof(uint) * drawEdgeArgs.Length, ComputeBufferType.IndirectArguments);
             drawEdgeArgsBuffer.SetData(drawEdgeArgs);
 
-            initCellsKer = new Kernel(compute, "InitCells");
-            resetCellsKer = new Kernel(compute, "ResetCells");
-            emitCellsKer = new Kernel(compute, "EmitCells");
-            interactCellsKer = new Kernel(compute, "InteractCells");
-            updateCellsKer = new Kernel(compute, "UpdateCells");
-            divideCellsKer = new Kernel(compute, "DivideCells");
-
-            initEdgesKer = new Kernel(compute, "InitEdges");
-            resetEdgesKer = new Kernel(compute, "ResetEdges");
-            updateEdgesKer = new Kernel(compute, "UpdateEdges");
-            removeEdgesKer = new Kernel(compute, "RemoveEdges");
-            copyEdgesKer = new Kernel(compute, "CopyEdges");
-
-            removeCellsKer = new Kernel(compute, "RemoveCells");
-            removeCellsCircleKer = new Kernel(compute, "RemoveCellsCircle");
-            removeCellsLineKer = new Kernel(compute, "RemoveCellsLine");
-
-            divideKer = new Kernel(compute, "Divide");
-            wrapKer = new Kernel(compute, "Wrap");
-            huntKer = new Kernel(compute, "Hunt");
+            kernels = new Dictionary<KernelType, Kernel>();
+            foreach(var key in Enum.GetNames(typeof(KernelType)))
+            {
+                kernels.Add((KernelType)Enum.Parse(typeof(KernelType), key, true), new Kernel(compute, key));
+            }
 
             gradTexture = CreateGradient(gradient);
             cellMaterial.SetTexture("_Gradient", gradTexture);
 
-            InitCells(initCellsKer);
-            InitEdges(initEdgesKer);
+            InitCells(kernels[KernelType.InitCells]);
+            InitEdges(kernels[KernelType.InitEdges]);
             UpdatePoolCount();
 
-            EmitCells(emitCellsKer, 1);
+            EmitCells(kernels[KernelType.EmitCells], 1);
             UpdatePoolCount();
 
             iDivider = StartCoroutine(IDivider());
@@ -144,9 +139,9 @@ namespace CellularGrowth.Dim2
             var dt = Time.deltaTime;
             var t = Time.timeSinceLevelLoad;
 
-            UpdateEdges(updateEdgesKer, dt);
-            InteractCells(interactCellsKer, cellPoolCount);
-            UpdateCells(updateCellsKer, cellPoolCount, dt);
+            UpdateEdges(kernels[KernelType.UpdateEdges], dt);
+            InteractCells(kernels[KernelType.InteractCells], cellPoolCount);
+            UpdateCells(kernels[KernelType.UpdateCells], cellPoolCount, dt);
 
             if(membrane.gameObject.activeSelf) {
                 Wrap(membrane, dt);
@@ -160,8 +155,8 @@ namespace CellularGrowth.Dim2
                 predators.Step(this, t, dt);
             }
 
-            RemoveCells(removeCellsKer);
-            RemoveEdges(removeEdgesKer);
+            RemoveCells(kernels[KernelType.RemoveCells]);
+            RemoveEdges(kernels[KernelType.RemoveEdges]);
             UpdatePoolCount();
 
             Render();
@@ -249,11 +244,11 @@ namespace CellularGrowth.Dim2
 
         protected void Reset()
         {
-            ResetCells(resetCellsKer);
-            ResetEdges(resetEdgesKer);
+            ResetCells(kernels[KernelType.ResetCells]);
+            ResetEdges(kernels[KernelType.ResetEdges]);
             UpdatePoolCount();
 
-            EmitCells(emitCellsKer, 1);
+            EmitCells(kernels[KernelType.EmitCells], 1);
             UpdatePoolCount();
         }
 
@@ -265,9 +260,9 @@ namespace CellularGrowth.Dim2
                 yield return new WaitForSeconds(interval);
                 if(Input.GetMouseButton(0) && Dividable())
                 {
-                    DivideCells(divideCellsKer, Time.timeSinceLevelLoad);
-                    CopyEdges(copyEdgesKer); 
-                    Divide(divideKer, Time.timeSinceLevelLoad);
+                    DivideCells(kernels[KernelType.DivideCells], Time.timeSinceLevelLoad);
+                    CopyEdges(kernels[KernelType.CopyEdges]); 
+                    Divide(kernels[KernelType.Divide], Time.timeSinceLevelLoad);
                     UpdatePoolCount();
                 }
             }
@@ -470,7 +465,7 @@ namespace CellularGrowth.Dim2
 
         public void Hunt(Predators predators)
         {
-            var ker = huntKer;
+            var ker = kernels[KernelType.Hunt];
             compute.SetBuffer(ker.Index, "_Predators", predators.PredatorsBuffer);
             compute.SetInt("_PredatorsCount", predators.PredatorsBuffer.count);
             RemoveCells(ker);
@@ -480,7 +475,7 @@ namespace CellularGrowth.Dim2
         {
             compute.SetVector("_Center", center);
             compute.SetFloat("_Radius", radius);
-            RemoveCells(removeCellsCircleKer);
+            RemoveCells(kernels[KernelType.RemoveCellsCircle]);
         }
 
         public void RemoveCellsLine(Vector2 start, Vector2 end, float threshold)
@@ -488,7 +483,7 @@ namespace CellularGrowth.Dim2
             compute.SetVector("_Start", start);
             compute.SetVector("_End", end);
             compute.SetFloat("_Threshold", threshold);
-            RemoveCells(removeCellsLineKer);
+            RemoveCells(kernels[KernelType.RemoveCellsLine]);
         }
 
         public void RemoveCells(Kernel ker)
@@ -510,7 +505,7 @@ namespace CellularGrowth.Dim2
 
         public void Wrap(Membrane mem, float dt)
         {
-            var ker = wrapKer;
+            var ker = kernels[KernelType.Wrap];
             compute.SetBuffer(ker.Index, "_Cells", cellsBufferRead);
             compute.SetInt("_CellsCount", cellsCount);
 
