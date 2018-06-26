@@ -71,6 +71,7 @@
 
         // float u = (cell.links * 0.2);
         // float4 grad = float4(hsv2rgb(float3(fmod(u, 1.0), 1, 1)), 1);
+        // OUT.color = grad;
         // float vl = saturate(length(cell.velocity));
         OUT.color = lerp(_Base, _Highlight, saturate(cell.stress));
 

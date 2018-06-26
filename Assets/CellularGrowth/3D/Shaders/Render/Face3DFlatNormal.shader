@@ -1,9 +1,8 @@
-﻿Shader "CellularGrowth/3D/Face"
+﻿Shader "CellularGrowth/3D/FaceFlatNormal"
 {
 
 	Properties
 	{
-		_Color ("Color", Color) = (1, 1, 1, 1)
     [KeywordEnum(None, Front, Back)] _Cull ("Cull", Int) = 2
 	}
 
@@ -47,8 +46,6 @@
 			StructuredBuffer<Edge> _Edges;
 			StructuredBuffer<Face> _Faces;
 
-			float4 _Color;
-
       float4x4 _World2Local, _Local2World;
 
       void setup() {
@@ -71,14 +68,15 @@
         float4 vertex = float4(position, 1);
         OUT.position = UnityObjectToClipPos(vertex);
 
-        OUT.normal = lerp(c0.normal, lerp(c1.normal, c2.normal, saturate(IN.vid - 1)), saturate(IN.vid));
-        OUT.normal = mul(unity_ObjectToWorld, float4(OUT.normal, 0)).xyz;
+        float3 d0 = normalize(c1.position - c0.position);
+        float3 d1 = normalize(c2.position - c1.position);
+        OUT.normal = mul(unity_ObjectToWorld, float4(normalize(cross(d0, d1)), 0)).xyz;
 				return OUT;
 			}
 
 			fixed4 frag (v2f IN, fixed facing : VFACE) : SV_Target
 			{
-        float3 normal = IN.normal;
+        float3 normal = normalize(IN.normal * lerp(-1, 1, facing));
 				return float4((normal.xyz + 1.0) * 0.5, 1);
 			}
 

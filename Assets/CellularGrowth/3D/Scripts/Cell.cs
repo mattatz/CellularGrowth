@@ -12,12 +12,12 @@ namespace CellularGrowth.Dim3
         public Vector3 position;
         public Vector3 velocity;
         public Vector3 force;
+        public Vector3 normal;
         public float radius;
         public float threshold;
         public float stress;
-        public int type;
         public int links;
-        public int faces;
+        public uint still;
         public uint dividable;
         public uint alive;
     }

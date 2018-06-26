@@ -6,12 +6,12 @@ struct Cell
     float3 position;
     float3 velocity;
     float3 force;
+    float3 normal;
     float radius;
     float threshold;
     float stress;
-    int type;
     int links;
-    int faces;
+    bool still;
     bool dividable;
     bool alive;
 };

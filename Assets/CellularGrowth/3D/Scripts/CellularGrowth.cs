@@ -22,39 +22,40 @@ namespace CellularGrowth.Dim3
         [SerializeField] protected bool drawCell = true, drawEdge = true, drawFace = true;
 
         [SerializeField] protected bool dividable;
-        [SerializeField, Range(3, 5)] protected int dividableLinks = 4;
         [SerializeField] protected int threshold = 8000;
         [SerializeField, Range(0.0f, 1.0f)] protected float rate = 0.5f;
-        [SerializeField, Range(0.005f, 2f)] protected float interval = 0.5f;
+        [SerializeField, Range(1, 80)] protected int frequency = 30;
+        [SerializeField, Range(1, 10)] protected int maxLink = 8, maxInterval = 8;
+
+        [SerializeField, Range(1f, 10f)] protected float growSpeed = 5f;
+
         [SerializeField, Range(1f, 10f)] protected float limit = 3.0f;
         [SerializeField, Range(0.5f, 0.99f)] protected float drag = 0.9f;
         [SerializeField, Range(1f, 10f)] protected float distance = 3f;
 
-        ComputeBuffer cellsBufferRead, cellsBufferWrite, cellsPoolBuffer, cellArgsBuffer;
-        int[] cellArgs = new int[] { 0, 1, 0, 0 };
+        protected ComputeBuffer cellsBufferRead, cellsBufferWrite, cellsPoolBuffer, cellArgsBuffer;
+        protected int[] cellArgs = new int[] { 0, 1, 0, 0 };
 
         protected int edgesCount;
-        ComputeBuffer edgesBufferRead, edgesBufferWrite, edgesPoolBuffer, edgeArgsBuffer;
-        int[] edgeArgs = new int[] { 0, 1, 0, 0 };
+        protected ComputeBuffer edgesBufferRead, edgesBufferWrite, edgesPoolBuffer, edgeArgsBuffer;
+        protected int[] edgeArgs = new int[] { 0, 1, 0, 0 };
 
         protected int facesCount;
-        ComputeBuffer facesBufferRead, facesBufferWrite, facesPoolBuffer, faceArgsBuffer;
-        int[] faceArgs = new int[] { 0, 1, 0, 0 };
+        protected ComputeBuffer facesBufferRead, facesBufferWrite, facesPoolBuffer, faceArgsBuffer;
+        protected int[] faceArgs = new int[] { 0, 1, 0, 0 };
 
-        ComputeBuffer drawCellArgsBuffer;
-        uint[] drawCellArgs = new uint[5] { 0, 0, 0, 0, 0 };
+        protected ComputeBuffer drawCellArgsBuffer;
+        protected uint[] drawCellArgs = new uint[5] { 0, 0, 0, 0, 0 };
 
         protected Mesh line;
-        ComputeBuffer drawEdgeArgsBuffer;
-        uint[] drawEdgeArgs = new uint[5] { 0, 0, 0, 0, 0 };
+        protected ComputeBuffer drawEdgeArgsBuffer;
+        protected uint[] drawEdgeArgs = new uint[5] { 0, 0, 0, 0, 0 };
 
         protected Mesh triangle;
-        ComputeBuffer drawFaceArgsBuffer;
-        uint[] drawFaceArgs = new uint[5] { 0, 0, 0, 0, 0 };
+        protected ComputeBuffer drawFaceArgsBuffer;
+        protected uint[] drawFaceArgs = new uint[5] { 0, 0, 0, 0, 0 };
 
         protected int cellPoolCount = 0, edgePoolCount = 0, facePoolCount = 0;
-
-        protected Coroutine iDivider;
 
         #region Kernels
 
@@ -88,7 +89,7 @@ namespace CellularGrowth.Dim3
 
         #region Monobehaviour functions
 
-        protected void Start()
+        protected virtual void Start()
         {
             cellsBufferRead = new ComputeBuffer(cellsCount, Marshal.SizeOf(typeof(Cell)), ComputeBufferType.Default);
             cellsBufferWrite = new ComputeBuffer(cellsCount, Marshal.SizeOf(typeof(Cell)), ComputeBufferType.Default);
@@ -144,23 +145,26 @@ namespace CellularGrowth.Dim3
             InitFaces(kernels[KernelType.InitFaces]);
             UpdatePoolCount();
 
+            Setup();
+        }
+
+        protected virtual void Setup()
+        {
             InitTetrahedron();
             // InitHexahedron();
             UpdatePoolCount();
-
-            iDivider = StartCoroutine(IDivider());
         }
 
-        protected void Update()
+        protected virtual void Update()
         {
-            var dt = Time.deltaTime;
+            var dt = Mathf.Min(Time.deltaTime, 0.05f);
             var t = Time.timeSinceLevelLoad;                
 
             UpdateEdges(kernels[KernelType.UpdateEdges], dt);
             InteractCells(kernels[KernelType.InteractCells], cellPoolCount);
             UpdateCells(kernels[KernelType.UpdateCells], cellPoolCount, dt);
 
-            // if(Dividable()) Divide();
+            if(Time.frameCount % frequency == 0 && Dividable()) Divide();
 
             Render();
         }
@@ -201,8 +205,8 @@ namespace CellularGrowth.Dim3
                         Reset();
                     }
                     GUILayout.Label("cells: " + (cellsCount - cellPoolCount).ToString() + "/" + cellsCount.ToString());
-                    GUILayout.Label("edges: " + (edgesCount - edgePoolCount).ToString() + "/" + edgesCount.ToString());
-                    GUILayout.Label("faces: " + (facesCount - facePoolCount).ToString() + "/" + facesCount.ToString());
+                    // GUILayout.Label("edges: " + (edgesCount - edgePoolCount).ToString() + "/" + edgesCount.ToString());
+                    // GUILayout.Label("faces: " + (facesCount - facePoolCount).ToString() + "/" + facesCount.ToString());
 
                     // dividable = GUILayout.Toggle(dividable, "dividable");
                     drawCell = GUILayout.Toggle(drawCell, "draw cell");
@@ -267,7 +271,7 @@ namespace CellularGrowth.Dim3
             UpdatePoolCount();
         }
 
-        protected IEnumerator IDivider()
+        protected IEnumerator IDivider(float interval)
         {
             yield return 0;
             while(true)
@@ -327,8 +331,8 @@ namespace CellularGrowth.Dim3
         {
             var tmp = cellPoolCount;
             cellPoolCount = GetCellPoolCount();
-            edgePoolCount = GetEdgePoolCount();
-            facePoolCount = GetFacePoolCount();
+            // edgePoolCount = GetEdgePoolCount();
+            // facePoolCount = GetFacePoolCount();
             return tmp != cellPoolCount;
         }
 
@@ -374,15 +378,6 @@ namespace CellularGrowth.Dim3
             compute.Dispatch(ker.Index, Mathf.FloorToInt(cellsCount / (int)ker.ThreadX) + 1, 1, 1);
         }
 
-        protected void EmitCells(Kernel ker, int n, int type = 0)
-        {
-            compute.SetBuffer(ker.Index, "_Cells", cellsBufferRead);
-            compute.SetBuffer(ker.Index, "_CellPoolConsume", cellsPoolBuffer);
-            compute.SetInt("_EmitCount", n);
-            compute.SetInt("_EmitType", type);
-            compute.Dispatch(ker.Index, n / (int)ker.ThreadX + 1, 1, 1);
-        }
-
         protected void InteractCells(Kernel ker, int current)
         {
             compute.SetBuffer(ker.Index, "_CellsRead", cellsBufferRead);
@@ -402,12 +397,18 @@ namespace CellularGrowth.Dim3
         {
             compute.SetBuffer(ker.Index, "_Cells", cellsBufferRead);
             compute.SetBuffer(ker.Index, "_Edges", edgesBufferRead);
+            compute.SetBuffer(ker.Index, "_Faces", facesBufferRead);
             compute.SetInt("_CellsCount", cellsCount);
             compute.SetInt("_EdgesCount", edgesCount);
+            compute.SetInt("_FacesCount", facesCount);
             compute.SetFloat("_DT", dt);
+            compute.SetFloat("_GrowSpeed", growSpeed);
             compute.SetFloat("_Limit", limit);
             compute.SetFloat("_Drag", drag);
+
             compute.SetVector("_Point", GetMousePoint());
+            compute.SetVector("_ViewDirection", Vector3.forward);
+
             compute.Dispatch(ker.Index, Mathf.FloorToInt(cellsCount / (int)ker.ThreadX) + 1, 1, 1);
         }
 
@@ -431,7 +432,8 @@ namespace CellularGrowth.Dim3
             compute.SetBuffer(ker.Index, "_Cells", cellsBufferRead);
             compute.SetInt("_CellsCount", cellsCount);
 
-            compute.SetInt("_DividableLinks", dividableLinks);
+            compute.SetInt("_MaxLink", maxLink);
+            compute.SetInt("_MaxInterval", maxInterval);
             compute.SetFloat("_Time", time);
             compute.SetFloat("_Rate", rate);
             compute.Dispatch(ker.Index, Mathf.FloorToInt(cellsCount / (int)ker.ThreadX) + 1, 1, 1);
@@ -457,6 +459,7 @@ namespace CellularGrowth.Dim3
             compute.SetBuffer(ker.Index, "_CellsRead", cellsBufferRead);
             compute.SetBuffer(ker.Index, "_Cells", cellsBufferWrite);
             compute.SetInt("_CellsCount", cellsCount);
+            compute.SetFloat("_InvCellsCount", 1f / cellsCount);
             compute.SetBuffer(ker.Index, "_CellPoolConsume", cellsPoolBuffer);
 
             compute.SetBuffer(ker.Index, "_EdgesRead", edgesBufferRead);
@@ -471,6 +474,9 @@ namespace CellularGrowth.Dim3
 
             compute.SetFloat("_Time", time);
             compute.Dispatch(ker.Index, Mathf.FloorToInt(cellsCount / (int)ker.ThreadX) + 1, 1, 1);
+
+            compute.SetInt("_MaxLink", maxLink);
+            compute.SetInt("_MaxInterval", maxInterval);
 
             SwapBuffer(ref cellsBufferRead, ref cellsBufferWrite);
             SwapBuffer(ref edgesBufferRead, ref edgesBufferWrite);
@@ -587,19 +593,6 @@ namespace CellularGrowth.Dim3
         protected void InitHexahedron()
         {
             var ker = new Kernel(compute, "InitHexahedron");
-            compute.SetBuffer(ker.Index, "_Cells", cellsBufferRead);
-            compute.SetBuffer(ker.Index, "_CellPoolConsume", cellsPoolBuffer);
-            compute.SetBuffer(ker.Index, "_Edges", edgesBufferRead);
-            compute.SetBuffer(ker.Index, "_EdgePoolConsume", edgesPoolBuffer);
-            compute.SetBuffer(ker.Index, "_Faces", facesBufferRead);
-            compute.SetBuffer(ker.Index, "_FacePoolConsume", facesPoolBuffer);
-            compute.Dispatch(ker.Index, 1, 1, 1);
-        }
-
-        protected void InitMesh(Mesh mesh)
-        {
-            var ker = new Kernel(compute, "InitMesh");
-
             compute.SetBuffer(ker.Index, "_Cells", cellsBufferRead);
             compute.SetBuffer(ker.Index, "_CellPoolConsume", cellsPoolBuffer);
             compute.SetBuffer(ker.Index, "_Edges", edgesBufferRead);

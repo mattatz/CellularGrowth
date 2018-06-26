@@ -123,7 +123,7 @@ GameObject:
   - component: {fileID: 192396885}
   - component: {fileID: 192396886}
   m_Layer: 0
-  m_Name: CellularGrowth
+  m_Name: ErosiveCellularGrowth
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -136,8 +136,8 @@ Transform:
   m_PrefabInternal: {fileID: 0}
   m_GameObject: {fileID: 192396884}
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_LocalPosition: {x: -2.83, y: -8.07, z: 0}
+  m_LocalScale: {x: 1.5, y: 1.5, z: 1.5}
   m_Children: []
   m_Father: {fileID: 0}
   m_RootOrder: 1
@@ -150,7 +150,7 @@ MonoBehaviour:
   m_GameObject: {fileID: 192396884}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 3b83a20bb16e3644896e82f0e3fe7090, type: 3}
+  m_Script: {fileID: 11500000, guid: 0eff4438d31b2b24ba8e4eeee3ca6b67, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
   skin: {fileID: 11400000, guid: edf7f0b4519d0a0438edd00334366542, type: 2}
@@ -160,19 +160,21 @@ MonoBehaviour:
   cellMaterial: {fileID: 2100000, guid: fa31b326464d6974b804a380c1e2c26d, type: 2}
   edgeMaterial: {fileID: 2100000, guid: 9e8f5c423cd292a44834317cc27402e4, type: 2}
   faceMaterial: {fileID: 2100000, guid: 2245eff7751cdef47b5f2fc7cd603762, type: 2}
-  drawCell: 0
-  drawEdge: 0
+  drawCell: 1
+  drawEdge: 1
   drawFace: 1
   dividable: 1
   threshold: 5000
-  rate: 0.84
-  frequency: 30
+  rate: 1
+  frequency: 24
   maxLink: 8
   maxInterval: 8
-  growSpeed: 5
-  limit: 3
-  drag: 0.761
+  growSpeed: 10
+  limit: 3.1
+  drag: 0.873
   distance: 3
+  seed: {fileID: 4300000, guid: c6ab79f7e0af0fd4aa060a06275e1d55, type: 3}
+  seedScale: {x: 60, y: 60, z: 60}
 --- !u!1 &286814350
 GameObject:
   m_ObjectHideFlags: 0
