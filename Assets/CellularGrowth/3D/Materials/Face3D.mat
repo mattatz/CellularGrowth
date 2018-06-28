@@ -8,7 +8,7 @@ Material:
   m_PrefabInternal: {fileID: 0}
   m_Name: Face3D
   m_Shader: {fileID: 4800000, guid: 23739b61efebb4d4db34a3c718697e03, type: 3}
-  m_ShaderKeywords: _CULL_BACK
+  m_ShaderKeywords: _CULL_BACK _DEBUG_NORMAL
   m_LightmapFlags: 4
   m_EnableInstancingVariants: 0
   m_DoubleSidedGI: 0
@@ -58,6 +58,7 @@ Material:
     - _BumpScale: 1
     - _Cull: 2
     - _Cutoff: 0.5
+    - _Debug: 0
     - _DetailNormalMapScale: 1
     - _DstBlend: 0
     - _GlossMapScale: 1

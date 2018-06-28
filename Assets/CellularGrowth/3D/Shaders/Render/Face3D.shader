@@ -5,6 +5,7 @@
 	{
 		_Color ("Color", Color) = (1, 1, 1, 1)
     [KeywordEnum(None, Front, Back)] _Cull ("Cull", Int) = 2
+    [KeywordEnum(Normal, Debug)] _Debug ("Debug", Int) = 0
 	}
 
 	SubShader
@@ -50,6 +51,7 @@
 			float4 _Color;
 
       float4x4 _World2Local, _Local2World;
+      float _Debug;
 
       void setup() {
         unity_ObjectToWorld = _Local2World;
@@ -67,7 +69,8 @@
         Cell c1 = _Cells[f.c1];
         Cell c2 = _Cells[f.c2];
         float3 position = lerp(c0.position, lerp(c1.position, c2.position, saturate(IN.vid - 1)), saturate(IN.vid));
-        position *= f.alive;
+        // position *= f.alive;
+        position *= lerp(f.alive, 1, _Debug);
         float4 vertex = float4(position, 1);
         OUT.position = UnityObjectToClipPos(vertex);
 
@@ -78,7 +81,7 @@
 
 			fixed4 frag (v2f IN, fixed facing : VFACE) : SV_Target
 			{
-        float3 normal = IN.normal;
+        float3 normal = normalize(IN.normal);
 				return float4((normal.xyz + 1.0) * 0.5, 1);
 			}
 

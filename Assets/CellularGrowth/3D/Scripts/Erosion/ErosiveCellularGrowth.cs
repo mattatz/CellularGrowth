@@ -28,6 +28,22 @@ namespace CellularGrowth.Dim3
             UpdatePoolCount();
         }
 
+        protected override void Reset()
+        {
+            ResetCells(kernels[KernelType.ResetCells]);
+            ResetEdges(kernels[KernelType.ResetEdges]);
+            ResetFaces(kernels[KernelType.ResetFaces]);
+
+            CopyCells(kernels[KernelType.CopyCells]);
+            CopyEdges(kernels[KernelType.CopyEdges]);
+            CopyFaces(kernels[KernelType.CopyFaces]);
+
+            UpdatePoolCount();
+
+            InitMesh(seed, seedScale);
+            UpdatePoolCount();
+        }
+
         protected void InitMesh(Mesh mesh, Vector3 scale)
         {
             var ker = new Kernel(compute, "InitMesh");

@@ -131,8 +131,8 @@ uint make_face(int c0, int c1, int c2, int e0, int e1, int e2)
     face.e2 = e2;
     face.removable = false;
     face.alive = true;
-    _Faces[idx] = face;
 
+    _Faces[idx] = face;
     return idx;
 }
 
@@ -253,7 +253,7 @@ void pickup_neighbors(int ic, out Neighbor neighbors[kEdgeNeighborLimit], out in
     for (int i = 0; i < _EdgesCount; i++)
     {
         Edge e = _EdgesRead[i];
-        if (e.alive && has_cell_in_edge(e, ic))
+        if (e.alive && !e.removable && has_cell_in_edge(e, ic))
         {
             Neighbor n;
             n.edge = i;
@@ -278,7 +278,7 @@ Neighbor get_neighbor_with_index(int ic, int index)
     for (int i = 0; i < _EdgesCount; i++)
     {
         Edge e = _EdgesRead[i];
-        if (e.alive && has_cell_in_edge(e, ic))
+        if (e.alive && !e.removable && has_cell_in_edge(e, ic))
         {
             if (counter == index)
             {
@@ -300,7 +300,7 @@ void pickup_faces_of_cell(int ic, out int faces[kFaceMax], out int faces_count)
     for (int i = 0; i < _FacesCount; i++)
     {
         Face f = _FacesRead[i];
-        if (f.alive && has_cell_in_face(f, ic))
+        if (f.alive && !f.removable && has_cell_in_face(f, ic))
         {
             faces[faces_count] = i;
             faces_count++;
@@ -320,7 +320,7 @@ void pickup_faces_of_edge(int ie, out int faces[kFaceNeighborLimit])
     for (int i = 0; i < _FacesCount; i++)
     {
         Face f = _FacesRead[i];
-        if (f.alive && has_edge_in_face(f, ie))
+        if (f.alive && !f.removable && has_edge_in_face(f, ie))
         {
             faces[counter] = i;
             counter++;
@@ -339,7 +339,7 @@ void pickup_faces_of_neighbor(Neighbor neighbor, int candidates[kFaceMax], int f
     {
         int iface  = candidates[i];
         Face f = _FacesRead[iface];
-        if (f.alive && has_edge_in_face(f, neighbor.edge))
+        if (f.alive && !f.removable && has_edge_in_face(f, neighbor.edge))
         {
             faces[counter] = iface;
             counter++;
@@ -530,7 +530,7 @@ bool dividable(uint id, Cell cell)
     if (x >= _Rate * growRate)
         return false;
 
-    return (cell.links < _MaxLink) && true;
+    return (cell.links < _MaxLink);
 }
 
 THREAD
@@ -551,8 +551,12 @@ void ResetCells (uint3 id : SV_DispatchThreadID)
     int idx = (int) id.x;
     if (idx >= _CellsCount) return;
 
-    Cell c = _Cells[idx];
-    if (c.alive)
+    Cell prev = _Cells[idx];
+    bool alive = prev.alive;
+
+    Cell c = create();
+    c.alive = alive;
+    if (alive)
     {
         c.alive = false;
         _CellPoolAppend.Append(idx);
@@ -634,7 +638,7 @@ void UpdateCells (uint3 id : SV_DispatchThreadID)
     for (int i = 0; i < _FacesCount; i++)
     {
         Face f = _Faces[i];
-        if (has_cell_in_face(f, idx))
+        if (f.alive && has_cell_in_face(f, idx))
         {
             float3 fn = calculate_face_normal(f);
             normal += fn;
@@ -702,9 +706,12 @@ void ResetEdges (uint3 id : SV_DispatchThreadID)
     if (idx >= _EdgesCount) return;
 
     Edge e = _Edges[idx];
+    e.a = -1;
+    e.b = -1;
+    e.fa = e.fb = float3(0, 0, 0);
+    e.removable = false;
     if (e.alive)
     {
-        e.removable = false;
         e.alive = false;
         _EdgePoolAppend.Append(idx);
     }
@@ -976,7 +983,7 @@ void DivideNetwork(inout Cell c, int idx)
         {
             int iface = faces[j];
             Face f = _FacesRead[iface];
-            if (has_edge_in_face(f, link.edge) && has_edge_in_face(f, link2.edge))
+            if (f.alive && has_edge_in_face(f, link.edge) && has_edge_in_face(f, link2.edge))
             {
                 found = true;
                 break;
@@ -989,6 +996,16 @@ void DivideNetwork(inout Cell c, int idx)
             return;
         }
     }
+
+    int iface0 = get_face_from_two_cells(faces, faces_count, sorted[0].cell, sorted[1].cell);
+    if (iface0 < 0)
+    {
+        return;
+    }
+    Face f0 = _FacesRead[iface0];
+    float3 fn0 = calculate_face_normal(f0);
+    if (length(fn0) < EPSILON)
+        return;
 
     // create a child
     float3 p = c.position;
@@ -1008,14 +1025,6 @@ void DivideNetwork(inout Cell c, int idx)
 
     uint nidx = _CellPoolConsume.Consume();
     _Cells[nidx] = child;
-
-    int iface0 = get_face_from_two_cells(faces, faces_count, sorted[0].cell, sorted[1].cell);
-    if (iface0 < 0)
-    {
-        return;
-    }
-    Face f0 = _FacesRead[iface0];
-    float3 fn0 = calculate_face_normal(f0);
 
     // sorted cells must be counter-clockwise ordering
     if (!is_counter_clockwise(c.position, _CellsRead[sorted[0].cell].position, _CellsRead[sorted[1].cell].position, fn0))
@@ -1107,6 +1116,7 @@ void InitFaces (uint3 id : SV_DispatchThreadID)
     if (_FacesCount <= idx) return;
 
     _Faces[idx].alive = false;
+    _Faces[idx].removable = false;
     _FacePoolAppend.Append(idx);
 }
 
@@ -1117,6 +1127,9 @@ void ResetFaces (uint3 id : SV_DispatchThreadID)
     if (idx >= _FacesCount) return;
 
     Face f = _Faces[idx];
+    f.c0 = f.c1 = f.c2 = -1;
+    f.e0 = f.e1 = f.e2 = -1;
+    f.removable = false;
     if (f.alive)
     {
         f.alive = false;
@@ -1135,8 +1148,10 @@ void RemoveFaces (uint3 id : SV_DispatchThreadID)
     Face f = _Faces[idx];
     if (f.alive && f.removable)
     {
-        f.removable = false;
+        // f.c0 = f.c1 = f.c2 = 0;
+        // f.e0 = f.e1 = f.e2 = 0;
         f.alive = false;
+        f.removable = false;
         _FacePoolAppend.Append(idx);
         _Faces[idx] = f;
     }

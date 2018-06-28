@@ -25,7 +25,8 @@ namespace CellularGrowth.Dim3
         [SerializeField] protected int threshold = 8000;
         [SerializeField, Range(0.0f, 1.0f)] protected float rate = 0.5f;
         [SerializeField, Range(1, 80)] protected int frequency = 30;
-        [SerializeField, Range(1, 10)] protected int maxLink = 8, maxInterval = 8;
+        [SerializeField, Range(7, 12)] protected int maxLink = 8;
+        [SerializeField, Range(2, 10)] protected int maxInterval = 8;
 
         [SerializeField, Range(1f, 10f)] protected float growSpeed = 5f;
 
@@ -205,8 +206,8 @@ namespace CellularGrowth.Dim3
                         Reset();
                     }
                     GUILayout.Label("cells: " + (cellsCount - cellPoolCount).ToString() + "/" + cellsCount.ToString());
-                    // GUILayout.Label("edges: " + (edgesCount - edgePoolCount).ToString() + "/" + edgesCount.ToString());
-                    // GUILayout.Label("faces: " + (facesCount - facePoolCount).ToString() + "/" + facesCount.ToString());
+                    GUILayout.Label("edges: " + (edgesCount - edgePoolCount).ToString() + "/" + edgesCount.ToString());
+                    GUILayout.Label("faces: " + (facesCount - facePoolCount).ToString() + "/" + facesCount.ToString());
 
                     // dividable = GUILayout.Toggle(dividable, "dividable");
                     drawCell = GUILayout.Toggle(drawCell, "draw cell");
@@ -256,15 +257,20 @@ namespace CellularGrowth.Dim3
                 faceMaterial.SetMatrix("_World2Local", transform.worldToLocalMatrix);
                 faceMaterial.SetMatrix("_Local2World", transform.localToWorldMatrix);
                 faceMaterial.SetPass(0);
-                Graphics.DrawMeshInstancedIndirect(triangle, 0, faceMaterial, new Bounds(Vector3.zero, Vector3.one * 100f), drawFaceArgsBuffer);
+                Graphics.DrawMeshInstancedIndirect(triangle, 0, faceMaterial, new Bounds(Vector3.zero, Vector3.one * 100f), drawFaceArgsBuffer, 0, null, ShadowCastingMode.On, true);
             }
         }
 
-        protected void Reset()
+        protected virtual void Reset()
         {
             ResetCells(kernels[KernelType.ResetCells]);
             ResetEdges(kernels[KernelType.ResetEdges]);
             ResetFaces(kernels[KernelType.ResetFaces]);
+
+            CopyCells(kernels[KernelType.CopyCells]);
+            CopyEdges(kernels[KernelType.CopyEdges]);
+            CopyFaces(kernels[KernelType.CopyFaces]);
+
             UpdatePoolCount();
 
             InitTetrahedron();
@@ -331,8 +337,8 @@ namespace CellularGrowth.Dim3
         {
             var tmp = cellPoolCount;
             cellPoolCount = GetCellPoolCount();
-            // edgePoolCount = GetEdgePoolCount();
-            // facePoolCount = GetFacePoolCount();
+            edgePoolCount = GetEdgePoolCount();
+            facePoolCount = GetFacePoolCount();
             return tmp != cellPoolCount;
         }
 
