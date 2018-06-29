@@ -34,3 +34,7 @@ tested on Unity 2017.3.1, windows10 (GTX 1060).
 - Curved PN Triangles - https://alex.vlachos.com/graphics/CurvedPNTriangles.pdf
 
 - Roboto - Google Fonts - https://fonts.google.com/specimen/Roboto
+
+## License
+
+[MIT](LICENSE)
