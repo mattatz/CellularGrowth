@@ -9,6 +9,7 @@
     [Space] _Glossiness ("Smoothness", Range(0, 1)) = 0.5
     [Gamma] _Metallic ("Metallic", Range(0, 1)) = 0
 
+    [KeywordEnum(Vertex, Flat)] _Normal ("Normal", Int) = 0
     [KeywordEnum(None, Front, Back)] _Cull ("Cull", Int) = 2
     [KeywordEnum(Normal, Debug)] _Debug ("Debug", Int) = 0
 	}

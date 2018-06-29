@@ -48,7 +48,7 @@ StructuredBuffer<Edge> _Edges;
 StructuredBuffer<Face> _Faces;
 
 float4x4 _World2Local, _Local2World;
-float _Debug;
+float _Normal, _Debug;
 
 void setup() {
   unity_ObjectToWorld = _Local2World;
@@ -71,6 +71,7 @@ v2f vert (appdata IN, uint iid : SV_InstanceID)
   float3 wpos = mul(unity_ObjectToWorld, vertex).xyz;
 
   float3 normal = lerp(c0.normal, lerp(c1.normal, c2.normal, saturate(IN.vid - 1)), saturate(IN.vid));
+  normal = lerp(normal, normalize(cross(c1.position - c0.position, c2.position - c0.position)), _Normal);
   float3 wnrm = UnityObjectToWorldNormal(normal);
 
 #if defined(PASS_CUBE_SHADOWCASTER)

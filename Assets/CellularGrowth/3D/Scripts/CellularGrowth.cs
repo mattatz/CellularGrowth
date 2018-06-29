@@ -19,7 +19,9 @@ namespace CellularGrowth.Dim3
         [SerializeField] protected ComputeShader compute;
 
         [SerializeField] protected Material cellMaterial, edgeMaterial, faceMaterial;
-        [SerializeField] protected bool drawCell = true, drawEdge = true, drawFace = true;
+        [SerializeField] protected bool drawCell = false, drawEdge = false, drawFace = true;
+        [SerializeField] protected ShadowCastingMode casting = ShadowCastingMode.On;
+        [SerializeField] protected bool receiveShadow = true;
 
         [SerializeField] protected bool dividable;
         [SerializeField] protected int threshold = 8000;
@@ -28,7 +30,7 @@ namespace CellularGrowth.Dim3
         [SerializeField, Range(7, 12)] protected int maxLink = 8;
         [SerializeField, Range(2, 10)] protected int maxInterval = 8;
 
-        [SerializeField, Range(1f, 10f)] protected float growSpeed = 5f;
+        [SerializeField, Range(1f, 20f)] protected float growSpeed = 5f;
 
         [SerializeField, Range(1f, 10f)] protected float limit = 3.0f;
         [SerializeField, Range(0.5f, 0.99f)] protected float drag = 0.9f;
@@ -206,8 +208,8 @@ namespace CellularGrowth.Dim3
                         Reset();
                     }
                     GUILayout.Label("cells: " + (cellsCount - cellPoolCount).ToString() + "/" + cellsCount.ToString());
-                    GUILayout.Label("edges: " + (edgesCount - edgePoolCount).ToString() + "/" + edgesCount.ToString());
-                    GUILayout.Label("faces: " + (facesCount - facePoolCount).ToString() + "/" + facesCount.ToString());
+                    // GUILayout.Label("edges: " + (edgesCount - edgePoolCount).ToString() + "/" + edgesCount.ToString());
+                    // GUILayout.Label("faces: " + (facesCount - facePoolCount).ToString() + "/" + facesCount.ToString());
 
                     // dividable = GUILayout.Toggle(dividable, "dividable");
                     drawCell = GUILayout.Toggle(drawCell, "draw cell");
@@ -220,6 +222,12 @@ namespace CellularGrowth.Dim3
                     {
                         GUILayout.Label("rate: " + rate.ToString("0.00"), GUILayout.Width(60f));
                         rate = GUILayout.HorizontalSlider(rate, 0.25f, 0.75f, GUILayout.Width(100f));
+                    }
+
+                    using(new GUILayout.HorizontalScope())
+                    {
+                        GUILayout.Label("frequency: " + frequency, GUILayout.Width(60f));
+                        frequency = Mathf.FloorToInt(GUILayout.HorizontalSlider(frequency, 1, 50, GUILayout.Width(100f)));
                     }
 
                 }
@@ -257,7 +265,7 @@ namespace CellularGrowth.Dim3
                 faceMaterial.SetMatrix("_World2Local", transform.worldToLocalMatrix);
                 faceMaterial.SetMatrix("_Local2World", transform.localToWorldMatrix);
                 faceMaterial.SetPass(0);
-                Graphics.DrawMeshInstancedIndirect(triangle, 0, faceMaterial, new Bounds(Vector3.zero, Vector3.one * 100f), drawFaceArgsBuffer, 0, null, ShadowCastingMode.On, true);
+                Graphics.DrawMeshInstancedIndirect(triangle, 0, faceMaterial, new Bounds(Vector3.zero, Vector3.one * 100f), drawFaceArgsBuffer, 0, null, casting, receiveShadow);
             }
         }
 
@@ -337,8 +345,8 @@ namespace CellularGrowth.Dim3
         {
             var tmp = cellPoolCount;
             cellPoolCount = GetCellPoolCount();
-            edgePoolCount = GetEdgePoolCount();
-            facePoolCount = GetFacePoolCount();
+            // edgePoolCount = GetEdgePoolCount();
+            // facePoolCount = GetFacePoolCount();
             return tmp != cellPoolCount;
         }
 

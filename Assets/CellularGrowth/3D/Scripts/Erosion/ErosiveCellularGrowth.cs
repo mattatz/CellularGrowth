@@ -63,9 +63,11 @@ namespace CellularGrowth.Dim3
             var seedEdges = new List<SeedEdge>();
             var seedFaces = new List<SeedFace>();
 
+            var bounds = mesh.bounds;
+            var offset = -bounds.size * 0.5f;
             for(int i = 0, n = mesh.vertexCount; i < n; i++)
             {
-                var v = vertices[i];
+                var v = (vertices[i] - bounds.min) + offset;
                 seedVertices.Add(new SeedVertex()
                 {
                     position = Vector3.Scale(v, scale)

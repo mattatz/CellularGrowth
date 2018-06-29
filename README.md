@@ -13,9 +13,7 @@ GPU-based cellular growth simulation in Unity. 🧠
 
 ## 3D simulation
 
-![Sculpture1](https://raw.githubusercontent.com/mattatz/CellularGrowth/master/Captures/Sculpture1.gif)
-
-![Sculpture2](https://raw.githubusercontent.com/mattatz/CellularGrowth/master/Captures/Sculpture2.gif)
+![Sculpture](https://raw.githubusercontent.com/mattatz/CellularGrowth/master/Captures/Sculpture.gif)
 
 This project uses D3D11 features (ex. Append/Consume buffer), so it requires DirectX environment.
 
@@ -25,6 +23,8 @@ tested on Unity 2017.3.1, windows10 (GTX 1060).
 
 ## Sources
 
-- iGeo Tutorials - Cell Division and Growth Algorithm 1 - http://igeo.jp/tutorial/55.html
+- iGeo Tutorials - Cell Division and Growth Algorithm - http://igeo.jp/tutorial/55.html
+
+- Curved PN Triangles - https://alex.vlachos.com/graphics/CurvedPNTriangles.pdf
 
 - Roboto - Google Fonts - https://fonts.google.com/specimen/Roboto
