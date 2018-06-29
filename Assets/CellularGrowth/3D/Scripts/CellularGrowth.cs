@@ -211,12 +211,15 @@ namespace CellularGrowth.Dim3
                     // GUILayout.Label("edges: " + (edgesCount - edgePoolCount).ToString() + "/" + edgesCount.ToString());
                     // GUILayout.Label("faces: " + (facesCount - facePoolCount).ToString() + "/" + facesCount.ToString());
 
-                    // dividable = GUILayout.Toggle(dividable, "dividable");
                     drawCell = GUILayout.Toggle(drawCell, "draw cell");
                     drawEdge = GUILayout.Toggle(drawEdge, "draw edge");
                     drawFace = GUILayout.Toggle(drawFace, "draw face");
 
                     GUILayout.Space(5f);
+
+                    dividable = GUILayout.Toggle(dividable, "dividable");
+
+                    GUILayout.Space(4f);
 
                     using(new GUILayout.HorizontalScope())
                     {

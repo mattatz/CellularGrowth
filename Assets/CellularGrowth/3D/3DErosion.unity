@@ -169,8 +169,8 @@ MonoBehaviour:
   threshold: 6000
   rate: 0.84
   frequency: 21
-  maxLink: 10
-  maxInterval: 8
+  maxLink: 12
+  maxInterval: 10
   growSpeed: 10
   limit: 3
   drag: 0.985

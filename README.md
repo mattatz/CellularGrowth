@@ -3,7 +3,7 @@ CellularGrowth
 
 GPU-based cellular growth simulation in Unity. 🧠
 
-## 2D simulation
+## 2D simulation 
 
 ![Intro](https://raw.githubusercontent.com/mattatz/CellularGrowth/master/Captures/Intro.gif)
 
@@ -11,9 +11,15 @@ GPU-based cellular growth simulation in Unity. 🧠
 
 ![Edges](https://raw.githubusercontent.com/mattatz/CellularGrowth/master/Captures/Edges.gif)
 
-## 3D simulation
+## 3D simulation 
 
 ![Sculpture](https://raw.githubusercontent.com/mattatz/CellularGrowth/master/Captures/Sculpture.gif)
+
+## 3D simulation - ErosiveCellularGrowth
+
+3D cellular growth from an imported mesh.
+
+![Bunny](https://raw.githubusercontent.com/mattatz/CellularGrowth/master/Captures/Bunny.gif)
 
 This project uses D3D11 features (ex. Append/Consume buffer), so it requires DirectX environment.
 
