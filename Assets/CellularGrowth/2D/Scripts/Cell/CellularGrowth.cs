@@ -17,6 +17,8 @@ namespace CellularGrowth.Dim2
         public ComputeBuffer EdgesBuffer { get { return edgesBufferRead; } }
 
         [SerializeField] protected GUISkin skin;
+        [SerializeField] protected bool gui;
+
         [SerializeField] protected Mesh mesh;
         [SerializeField] protected int cellsCount = 2 << 15; 
         [SerializeField] protected ComputeShader compute;
@@ -27,6 +29,7 @@ namespace CellularGrowth.Dim2
 
         [SerializeField] protected bool dividable;
         [SerializeField] protected int threshold = 8000;
+        [SerializeField, Range(1, 3)] protected int iterations = 2;
         [SerializeField, Range(0.0f, 1.0f)] protected float rate = 0.5f;
         [SerializeField, Range(0.1f, 3f)] protected float interval = 0.5f;
         [SerializeField, Range(1f, 10f)] protected float limit = 3.0f;
@@ -139,11 +142,14 @@ namespace CellularGrowth.Dim2
             var dt = Time.deltaTime;
             var t = Time.timeSinceLevelLoad;
 
-            UpdateEdges(kernels[KernelType.UpdateEdges], dt);
-            InteractCells(kernels[KernelType.InteractCells], cellPoolCount);
-            UpdateCells(kernels[KernelType.UpdateCells], cellPoolCount, dt);
+            for (int iter = 0; iter < iterations; iter++)
+            {
+                UpdateEdges(kernels[KernelType.UpdateEdges], dt);
+                InteractCells(kernels[KernelType.InteractCells], cellPoolCount);
+                UpdateCells(kernels[KernelType.UpdateCells], cellPoolCount, dt);
+            }
 
-            if(membrane.gameObject.activeSelf) {
+            if (membrane.gameObject.activeSelf) {
                 Wrap(membrane, dt);
                 membrane.Step(this, t, dt);
             }
@@ -189,6 +195,8 @@ namespace CellularGrowth.Dim2
 
         protected void OnGUI()
         {
+            if (!gui) return;
+
             GUI.skin = skin;
             using(new GUILayout.HorizontalScope())
             {

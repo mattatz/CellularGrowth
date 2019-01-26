@@ -25,7 +25,7 @@ This project uses D3D11 features (ex. Append/Consume buffer), so it requires Dir
 
 ## Compatibility
 
-tested on Unity 2017.3.1, windows10 (GTX 1060).
+tested on Unity 2018.3.2f1, windows10 (GTX 1060).
 
 ## Sources
 

@@ -14,6 +14,8 @@ namespace CellularGrowth.Dim3
     public class CellularGrowth : MonoBehaviour {
 
         [SerializeField] protected GUISkin skin;
+        [SerializeField] protected bool gui;
+
         [SerializeField] protected Mesh mesh;
         [SerializeField] protected int cellsCount = 2 << 15;
         [SerializeField] protected ComputeShader compute;
@@ -25,6 +27,7 @@ namespace CellularGrowth.Dim3
 
         [SerializeField] protected bool dividable;
         [SerializeField] protected int threshold = 8000;
+        [SerializeField, Range(1, 3)] protected int iterations = 2;
         [SerializeField, Range(0.0f, 1.0f)] protected float rate = 0.5f;
         [SerializeField, Range(1, 80)] protected int frequency = 30;
         [SerializeField, Range(7, 12)] protected int maxLink = 8;
@@ -161,13 +164,16 @@ namespace CellularGrowth.Dim3
         protected virtual void Update()
         {
             var dt = Mathf.Min(Time.deltaTime, 0.05f);
-            var t = Time.timeSinceLevelLoad;                
+            var t = Time.timeSinceLevelLoad;
 
-            UpdateEdges(kernels[KernelType.UpdateEdges], dt);
-            InteractCells(kernels[KernelType.InteractCells], cellPoolCount);
-            UpdateCells(kernels[KernelType.UpdateCells], cellPoolCount, dt);
+            for (int iter = 0; iter < iterations; iter++)
+            {
+                UpdateEdges(kernels[KernelType.UpdateEdges], dt);
+                InteractCells(kernels[KernelType.InteractCells], cellPoolCount);
+                UpdateCells(kernels[KernelType.UpdateCells], cellPoolCount, dt);
+            }
 
-            if(Time.frameCount % frequency == 0 && Dividable()) Divide();
+            if (Time.frameCount % frequency == 0 && Dividable()) Divide();
 
             Render();
         }
@@ -196,6 +202,8 @@ namespace CellularGrowth.Dim3
 
         protected void OnGUI()
         {
+            if (!gui) return;
+
             GUI.skin = skin;
             using(new GUILayout.HorizontalScope())
             {
